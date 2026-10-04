@@ -96,7 +96,8 @@ class App:
             mic.start()
         except Exception as e:
             self.log.exception("запуск не удался")
-            self.ui.call(lambda: self._fatal(f"Рэм не смог запуститься:\n{e}"))
+            msg = f"Рэм не смог запуститься:\n{e}"     # e исчезнет после except, а окно — позже
+            self.ui.call(lambda: self._fatal(msg))
             return
 
         self.speakers = SpeakerTap()

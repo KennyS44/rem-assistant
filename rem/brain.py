@@ -10,12 +10,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
 from .skills import Skill
+
+log = logging.getLogger("rem.brain")
 
 DEFAULT_URL = "http://127.0.0.1:11434"
 
@@ -63,10 +66,11 @@ class Ollama:
         except OllamaError:
             return False
 
-    def start_local(self, wait: float = 20.0) -> bool:
+    def start_local(self, wait: float = 30.0) -> bool:
         """Ollama установлена, но не запущена — запускаем её сами, без окон.
-        Сначала фоновое приложение Ollama (оно же следит за обновлениями),
-        иначе сам сервер. True — Ollama отвечает."""
+        Сначала фоновое приложение Ollama (оно же следит за обновлениями). Если оно
+        не подняло сервер за 8 с (так бывает при первом запуске — оно ждёт приветствия),
+        запускаем сам сервер. True — Ollama отвечает."""
         if self.available():
             return True
         import os
@@ -77,21 +81,27 @@ class Ollama:
         base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
         app, cli = os.path.join(base, "ollama app.exe"), os.path.join(base, "ollama.exe")
         no_window = 0x08000000                                   # CREATE_NO_WINDOW
+
+        def wait_up(seconds: float) -> bool:
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                if self.available():
+                    return True
+                time.sleep(1)
+            return False
+
         try:
             if os.path.exists(app):
                 subprocess.Popen([app], creationflags=no_window)
-            elif os.path.exists(cli):
-                subprocess.Popen([cli, "serve"], creationflags=no_window)
-            else:
+                if wait_up(8):
+                    return True
+            if not os.path.exists(cli):
                 return False
+            log.info("приложение Ollama не подняло сервер — запускаю ollama serve")
+            subprocess.Popen([cli, "serve"], creationflags=no_window)
         except OSError:
             return False
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            if self.available():
-                return True
-            time.sleep(1)
-        return False
+        return wait_up(wait)
 
     def models(self) -> list[str]:
         return [m["name"] for m in self._get("/api/tags").get("models", [])]

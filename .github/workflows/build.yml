@@ -121,7 +121,7 @@ jobs:
           'x' | Set-Content "$env:APPDATA\Rem\models\fake.onnx"
           New-Item -ItemType Directory -Force "$App\_internal\comtypes\gen" | Out-Null
           'x' | Set-Content "$App\_internal\comtypes\gen\_leftover.py"   # как кэш comtypes после работы
-          Expect ((& $OllamaExe list) -match 'smollm') "модель скачана в Ollama"
+          Expect (((& $OllamaExe list) -join ' ') -match 'smollm') "модель скачана в Ollama"
           Finish
 
       - name: Удаление с сохранением Ollama
@@ -139,7 +139,7 @@ jobs:
           Expect (Test-Path $OllamaExe)                             "Ollama оставлена"
           Start-Process $OllamaExe -ArgumentList 'serve' -WindowStyle Hidden
           Start-Sleep 5
-          Expect (-not ((& $OllamaExe list) -match 'smollm'))       "модель Рэм удалена из Ollama"
+          Expect (-not (((& $OllamaExe list) -join ' ') -match 'smollm'))       "модель Рэм удалена из Ollama"
           Finish
 
       - name: Повторная установка и полное удаление

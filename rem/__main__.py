@@ -303,6 +303,59 @@ def _utf8_console() -> None:
                 pass
 
 
+def speech_test(wavs: list[str], report: str | None = None) -> int:
+    """Настоящее распознавание на записанных фразах: модели, Vosk, GigaAM, проверка слова.
+    Для автосборки — проверяет, что библиотеки речи работают внутри собранного Rem.exe.
+    Ожидание задаётся именем файла: wake_*.wav — должен услышать, остальные — отсеять."""
+    import json
+    import wave
+    from pathlib import Path
+
+    import numpy as np
+    import vosk
+
+    from . import models
+    from .listen import ASR, CHUNK, WakeGuard, find_wake
+
+    out: list[str] = []
+
+    def emit(line):
+        out.append(line)
+        print(line)
+        if report:
+            with open(report, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
+    if report:
+        Path(report).write_text("", encoding="utf-8")
+    emit("…скачиваю модели речи (если их нет)")
+    models.ensure_speech_models()
+    vosk.SetLogLevel(-1)
+    vm = vosk.Model(str(models.vosk_dir()))
+    asr = ASR(models.gigaam_dir(), 3)
+    is_word = lambda w: vm.vosk_model_find_word(w) >= 0
+    ok = True
+    for path in wavs:
+        with wave.open(path) as w:
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        guard = WakeGuard(vm, "рэм")
+        heard = None
+        for i in range(0, len(audio) - CHUNK + 1, CHUNK):
+            heard = heard if heard is not None else guard.feed(audio[i:i + CHUNK])
+        tail = json.loads(guard.rec.FinalResult()).get("text", "").split()
+        if heard is None and "рэм" in tail:
+            heard = audio
+        text = asr.recognize(audio)
+        found, command = find_wake(text, "рэм", is_word)
+        want = Path(path).name.startswith("wake")
+        good = found == want and (not want or bool(command))
+        ok = ok and good
+        emit(f"{'OK  ' if good else 'FAIL'} {Path(path).name}: сторож={'да' if heard is not None else 'нет'}, "
+             f"распознано «{text}» → {'команда «' + command + '»' if found else 'отсеяно'}")
+    emit("ИТОГ: " + ("речь работает" if ok else "есть ошибки"))
+    return 0 if ok else 1
+
+
 def main() -> int:
     _utf8_console()
     ap = argparse.ArgumentParser(prog="rem", description="Рэм — локальный голосовой помощник")
@@ -310,11 +363,14 @@ def main() -> int:
     ap.add_argument("--dry", action="store_true", help="только показать план")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--report", help="файл для отчёта самопроверки")
+    ap.add_argument("--speech-test", nargs="+", metavar="WAV", help="проверка распознавания на записях")
     ap.add_argument("--console", action="store_true", help="писать журнал в консоль")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args()
     if a.selftest:
         return selftest(a.report)
+    if a.speech_test:
+        return speech_test(a.speech_test, a.report)
     log = setup_logging(a.console or bool(a.text))
     if a.text:
         return run_text(a.text, a.dry)

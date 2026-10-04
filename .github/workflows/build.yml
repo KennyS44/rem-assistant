@@ -46,6 +46,24 @@ jobs:
           if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
           if ($p.ExitCode -ne 0) { throw "Самопроверка Rem.exe не прошла (код $($p.ExitCode))" }
 
+      - name: Кэш моделей речи
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Roaming\Rem\models
+          key: speech-models-vosk022-gigaam3int8
+
+      - name: Распознавание речи в собранном Rem.exe
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $args = @("--speech-test", "tests\data\wake_command.wav", "tests\data\decoy.wav", "--report", "speech.txt")
+          $p = Start-Process -FilePath dist\Rem\Rem.exe -ArgumentList $args -PassThru
+          if (-not $p.WaitForExit(480000)) { $p.Kill(); Write-Host "Rem.exe не ответил за 8 минут" }
+          if (Test-Path speech.txt) { Get-Content speech.txt }
+          $crash = Join-Path $env:APPDATA "Rem\crash.txt"
+          if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
+          if ($p.ExitCode -ne 0) { throw "Распознавание в Rem.exe не прошло (код $($p.ExitCode))" }
+
       - name: Установщик
         shell: pwsh
         run: |

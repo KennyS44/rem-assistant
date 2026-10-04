@@ -229,10 +229,19 @@ def selftest(report: str | None = None) -> int:
     ok = True
     lines: list[str] = []
 
+    if report:
+        Path(report).write_text("", encoding="utf-8")
+
+    def emit(line):
+        lines.append(line)
+        print(line)
+        if report:                       # построчно: при зависании видно, где застряли
+            with open(report, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
     def check(name, cond):
         nonlocal ok
-        lines.append(("OK   " if cond else "FAIL ") + name)
-        print(lines[-1])
+        emit(("OK   " if cond else "FAIL ") + name)
         ok = ok and bool(cond)
 
     cfg = dict(cfgmod.DEFAULTS)
@@ -263,6 +272,7 @@ def selftest(report: str | None = None) -> int:
                 check(f"модуль {mod}", True)
             except Exception as e:
                 check(f"модуль {mod}: {e}", False)
+        emit("…проверяю голос Windows")
         try:
             from .speech import Voice
             v = Voice()
@@ -279,10 +289,7 @@ def selftest(report: str | None = None) -> int:
         import onnx_asr
         data = Path(onnx_asr.__file__).parent / "preprocessors" / "data" / "gigaam_v3_conv.onnx"
         check("данные onnx_asr внутри сборки", data.exists())
-    lines.append("ИТОГ: " + ("всё в порядке" if ok else "есть ошибки"))
-    print(lines[-1])
-    if report:
-        Path(report).write_text("\n".join(lines), encoding="utf-8")
+    emit("ИТОГ: " + ("всё в порядке" if ok else "есть ошибки"))
     return 0 if ok else 1
 
 

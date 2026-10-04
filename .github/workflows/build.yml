@@ -37,9 +37,13 @@ jobs:
 
       - name: Самопроверка собранного Rem.exe
         shell: pwsh
+        timeout-minutes: 5
         run: |
-          $p = Start-Process -FilePath dist\Rem\Rem.exe -ArgumentList "--selftest","--report","selftest.txt" -Wait -PassThru
-          Get-Content selftest.txt
+          $p = Start-Process -FilePath dist\Rem\Rem.exe -ArgumentList "--selftest","--report","selftest.txt" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "Rem.exe не ответил за 2 минуты" }
+          if (Test-Path selftest.txt) { Get-Content selftest.txt }
+          $crash = Join-Path $env:APPDATA "Rem\crash.txt"
+          if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
           if ($p.ExitCode -ne 0) { throw "Самопроверка Rem.exe не прошла (код $($p.ExitCode))" }
 
       - name: Установщик

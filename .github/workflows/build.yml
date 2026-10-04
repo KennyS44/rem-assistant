@@ -79,9 +79,97 @@ jobs:
           name: RemSetup
           path: Output/RemSetup.exe
 
-      - name: Релиз
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  install-cycle:
+    # Чистая Windows: установка вместе с Ollama → удаление → повторная установка →
+    # полное удаление. После каждого шага ищем оставшиеся следы.
+    needs: windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установщик из этой сборки
+        uses: actions/download-artifact@v4
         with:
-          files: Output/RemSetup.exe
+          name: RemSetup
+
+      - name: Установка вместе с Ollama
+        timeout-minutes: 15
+        run: |
+          . .\.github\scripts\checks.ps1
+          $p = Start-Process .\RemSetup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=autostart,ollama' -PassThru
+          $p.WaitForExit()
+          Expect (Test-Path "$App\Rem.exe")                         "Rem.exe установлен"
+          Expect (Test-Path "$App\unins000.exe")                    "деинсталлятор на месте"
+          Expect (Test-Path $StartMenu)                             "ярлык в меню «Пуск»"
+          Expect ($null -ne (RunValue))                             "автозапуск записан"
+          Expect (Test-Path $OllamaExe)                             "Ollama установлена установщиком Рэм"
+          Expect ((Get-ItemProperty HKCU:\Software\Rem -ErrorAction SilentlyContinue).InstalledOllama -eq '1') "отметка «Ollama ставили мы»"
+          Finish
+
+      - name: Подготовка — модель, настройки, мусор после работы
+        timeout-minutes: 10
+        run: |
+          . .\.github\scripts\checks.ps1
+          Start-Process $OllamaExe -ArgumentList 'serve' -WindowStyle Hidden
+          Start-Sleep 5
+          & $OllamaExe pull smollm:135m
+          New-Item -ItemType Directory -Force "$env:APPDATA\Rem\models" | Out-Null
+          '{"wake_word": "рэм", "model": "smollm:135m"}' | Set-Content "$env:APPDATA\Rem\config.json" -Encoding utf8
+          'x' | Set-Content "$env:APPDATA\Rem\models\fake.onnx"
+          New-Item -ItemType Directory -Force "$App\_internal\comtypes\gen" | Out-Null
+          'x' | Set-Content "$App\_internal\comtypes\gen\_leftover.py"   # как кэш comtypes после работы
+          Expect ((& $OllamaExe list) -match 'smollm') "модель скачана в Ollama"
+          Finish
+
+      - name: Удаление с сохранением Ollama
+        timeout-minutes: 10
+        run: |
+          . .\.github\scripts\checks.ps1
+          Start-Process "$App\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/KEEPOLLAMA=1'
+          WaitGone "$App\Rem.exe" 180
+          Start-Sleep 5
+          Expect (-not (Test-Path $App))                            "папка программы удалена целиком"
+          Expect (-not (Test-Path $StartMenu))                      "ярлык удалён"
+          Expect ($null -eq (RunValue))                             "автозапуск удалён"
+          Expect (-not (Test-Path "$env:APPDATA\Rem"))              "настройки и модели речи удалены"
+          Expect (-not (Test-Path HKCU:\Software\Rem))              "ключ реестра Rem удалён"
+          Expect (Test-Path $OllamaExe)                             "Ollama оставлена"
+          Start-Process $OllamaExe -ArgumentList 'serve' -WindowStyle Hidden
+          Start-Sleep 5
+          Expect (-not ((& $OllamaExe list) -match 'smollm'))       "модель Рэм удалена из Ollama"
+          Finish
+
+      - name: Повторная установка и полное удаление
+        timeout-minutes: 15
+        run: |
+          . .\.github\scripts\checks.ps1
+          $p = Start-Process .\RemSetup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS=autostart' -PassThru
+          $p.WaitForExit()
+          Expect (Test-Path "$App\Rem.exe") "Rem.exe установлен повторно"
+          Start-Process "$App\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/REMOVEOLLAMA=1'
+          WaitGone "$App\Rem.exe" 180
+          WaitGone $OllamaExe 180
+          Start-Sleep 5
+          Expect (-not (Test-Path $App))                            "папка программы удалена"
+          Expect ($null -eq (RunValue))                             "автозапуск удалён"
+          Expect (-not (Test-Path $OllamaExe))                      "Ollama удалена"
+          Expect (-not (Test-Path "$env:USERPROFILE\.ollama"))      "модели Ollama удалены"
+          Expect (-not (Get-Process -Name ollama -ErrorAction SilentlyContinue)) "процессы Ollama остановлены"
+          Finish
+
+  release:
+    # Релиз публикуется, только если установка и удаление прошли проверку.
+    needs: [windows, install-cycle]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RemSetup
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: RemSetup.exe
           generate_release_notes: true

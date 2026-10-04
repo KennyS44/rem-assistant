@@ -30,6 +30,16 @@ FONT = ("Segoe UI", 10)
 FONT_TITLE = ("Segoe UI Semibold", 12)
 
 
+def uninstaller():
+    """unins000.exe рядом с установленным Rem.exe (в режиме разработки — None)."""
+    import sys
+    from pathlib import Path
+    if not getattr(sys, "frozen", False):
+        return None
+    p = Path(sys.executable).parent / "unins000.exe"
+    return p if p.exists() else None
+
+
 def tray_image(state: str) -> Image.Image:
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -82,6 +92,7 @@ class UI:
             m("Журнал команд", lambda: self._open(self.app.assistant.journal)),
             m("Папка с настройками", lambda: self._open(cfgmod.app_dir())),
             pystray.Menu.SEPARATOR,
+            m("Удалить Рэм…", lambda: self.call(self.uninstall), visible=uninstaller() is not None),
             m("Выход", lambda: self.call(self.app.quit)),
         )
         self.icon = pystray.Icon("Rem", tray_image("idle"), "Рэм", menu)
@@ -99,6 +110,14 @@ class UI:
                 self.icon.notify(text, "Рэм")
             except Exception:
                 pass
+
+    def uninstall(self) -> None:
+        """Запускает деинсталлятор: он спросит, что удалить, и сам остановит Рэм."""
+        import subprocess
+        path = uninstaller()
+        if path:
+            subprocess.Popen([str(path)])
+            self.app.quit()
 
     @staticmethod
     def _open(path) -> None:

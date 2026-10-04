@@ -1,6 +1,12 @@
 # PyInstaller: сборка Rem.exe (папкой — быстрее запуск, чем один файл).
 # Запуск из корня репозитория:  pyinstaller packaging/rem.spec
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
+import os
+import sys
+
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
+
+ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))   # корень репозитория, где лежит пакет rem
+sys.path.insert(0, ROOT)                                 # чтобы collect_submodules нашёл rem
 
 datas = (
     collect_data_files("onnx_asr")           # предобработчики звука (*.onnx) внутри пакета
@@ -10,11 +16,11 @@ datas = (
 binaries = collect_dynamic_libs("vosk")      # libvosk.dll и зависимости
 
 a = Analysis(
-    ["launcher.py"],
-    pathex=[".."],
+    [os.path.join(SPECPATH, "launcher.py")],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
-    hiddenimports=[
+    hiddenimports=collect_submodules("rem") + [
         "pystray._win32",                    # бэкенд трея выбирается динамически
         "win32com.client", "pythoncom",
         "pycaw.pycaw", "comtypes.stream",
@@ -27,7 +33,7 @@ exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="Rem",
-    icon="rem.ico",
+    icon=os.path.join(SPECPATH, "rem.ico"),
     console=False,                           # без чёрного окна
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Rem")

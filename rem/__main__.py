@@ -105,6 +105,8 @@ class App:
 
     def _ensure_ollama(self) -> None:
         cl = self.assistant.client
+        if not cl.available() and cl.start_local():
+            self.log.info("Ollama была не запущена — запустил сам")
         while not cl.available():
             if not self._call_sync(self.ui.ask_ollama):
                 self.log.warning("Ollama не запущена — работаю только с простыми командами")
@@ -364,6 +366,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--report", help="файл для отчёта самопроверки")
     ap.add_argument("--speech-test", nargs="+", metavar="WAV", help="проверка распознавания на записях")
+    ap.add_argument("--check-ollama", action="store_true", help="запустить Ollama, если не запущена")
     ap.add_argument("--console", action="store_true", help="писать журнал в консоль")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args()
@@ -371,6 +374,13 @@ def main() -> int:
         return selftest(a.report)
     if a.speech_test:
         return speech_test(a.speech_test, a.report)
+    if a.check_ollama:
+        from .brain import Ollama
+        ok = Ollama(cfgmod.load().get("ollama_url", "http://127.0.0.1:11434")).start_local()
+        if a.report:
+            from pathlib import Path
+            Path(a.report).write_text("Ollama отвечает" if ok else "Ollama не запустилась", encoding="utf-8")
+        return 0 if ok else 1
     log = setup_logging(a.console or bool(a.text))
     if a.text:
         return run_text(a.text, a.dry)

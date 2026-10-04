@@ -109,6 +109,21 @@ jobs:
           Expect ((Get-ItemProperty HKCU:\Software\Rem -ErrorAction SilentlyContinue).InstalledOllama -eq '1') "отметка «Ollama ставили мы»"
           Finish
 
+      - name: Рэм сам запускает Ollama, если она остановлена
+        timeout-minutes: 5
+        run: |
+          . .\.github\scripts\checks.ps1
+          Stop-Process -Name "ollama app", ollama -Force -ErrorAction SilentlyContinue
+          Start-Sleep 3
+          Expect (-not (Get-Process -Name ollama -ErrorAction SilentlyContinue)) "Ollama остановлена"
+          $p = Start-Process "$App\Rem.exe" -ArgumentList '--check-ollama','--report','ollama.txt' -PassThru
+          $p.WaitForExit(60000) | Out-Null
+          if (Test-Path ollama.txt) { Get-Content ollama.txt }
+          Expect ($p.ExitCode -eq 0) "Rem.exe запустил Ollama"
+          $v = Invoke-RestMethod http://127.0.0.1:11434/api/version -TimeoutSec 5 -ErrorAction SilentlyContinue
+          Expect ($null -ne $v) "Ollama отвечает (версия $($v.version))"
+          Finish
+
       - name: Подготовка — модель, настройки, мусор после работы
         timeout-minutes: 10
         run: |

@@ -63,6 +63,36 @@ class Ollama:
         except OllamaError:
             return False
 
+    def start_local(self, wait: float = 20.0) -> bool:
+        """Ollama установлена, но не запущена — запускаем её сами, без окон.
+        Сначала фоновое приложение Ollama (оно же следит за обновлениями),
+        иначе сам сервер. True — Ollama отвечает."""
+        if self.available():
+            return True
+        import os
+        import subprocess
+        import sys
+        if sys.platform != "win32":
+            return False
+        base = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+        app, cli = os.path.join(base, "ollama app.exe"), os.path.join(base, "ollama.exe")
+        no_window = 0x08000000                                   # CREATE_NO_WINDOW
+        try:
+            if os.path.exists(app):
+                subprocess.Popen([app], creationflags=no_window)
+            elif os.path.exists(cli):
+                subprocess.Popen([cli, "serve"], creationflags=no_window)
+            else:
+                return False
+        except OSError:
+            return False
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if self.available():
+                return True
+            time.sleep(1)
+        return False
+
     def models(self) -> list[str]:
         return [m["name"] for m in self._get("/api/tags").get("models", [])]
 

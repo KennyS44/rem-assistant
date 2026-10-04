@@ -1,0 +1,38 @@
+name: Голос Рем по описанию
+
+# Запуск вручную. samples — образцы вариантов описания; pack — готовые фразы выбранным голосом.
+# Результат — архив в артефактах запуска; клипы кладутся в rem/clips отдельным коммитом.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "samples или pack"
+        default: samples
+      variant:
+        description: "вариант описания (a–d), для pack"
+        default: a
+      seed:
+        description: "номер образца (1 или 2), для pack"
+        default: "1"
+
+jobs:
+  design:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Зависимости
+        run: |
+          sudo apt-get install -y sox libsox-fmt-all > /dev/null
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install qwen-tts soundfile numpy
+      - name: Озвучка
+        run: python voice/design.py ${{ inputs.mode }} out --variant ${{ inputs.variant }} --seed ${{ inputs.seed }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rem-voice-${{ inputs.mode }}
+          path: out

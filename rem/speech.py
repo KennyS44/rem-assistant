@@ -62,6 +62,11 @@ SILERO_VOICES = {"xenia": "Ксения", "baya": "Байя", "kseniya": "Ксю
                  "aidar": "Айдар (мужской)", "eugene": "Евгений (мужской)"}
 PREVIEW = "Рэм слушает. Таймер на пять минут поставлен."
 
+# Подобрано замерами (высота, разброс интонации, резкость) под образ Рем: высокий (~300 Гц),
+# мягкий, с живой интонацией голос. «Ксюша» — единственный голос Silero с такой интонацией.
+REM_PRESET = {"voice_engine": "silero", "silero_speaker": "kseniya",
+              "voice_pitch": 25, "voice_rate": 90, "voice_timbre": 10}
+
 
 def sapi_params(pitch: int, rate: int) -> tuple[int, int]:
     """Высота (-30…+30 %) и темп (60…140 %) из настроек → шкалы SAPI (-10…+10).
@@ -69,6 +74,31 @@ def sapi_params(pitch: int, rate: int) -> tuple[int, int]:
     p = max(-10, min(10, round(int(pitch) / 3)))
     r = max(-10, min(10, round((int(rate) - 100) / 4) + 1))
     return p, r
+
+
+def timbre_params(pitch: int, rate: int, timbre: int) -> tuple[int, int, float]:
+    """Тембр моложе на timbre %: синтезируем ниже и медленнее, потом ускоряем запись в k раз.
+    Ускорение поднимает и высоту, и форманты; высота и темп возвращаются к заданным,
+    а форманты остаются выше — голос звучит моложе, без эффекта «бурундука»."""
+    k = 1 + max(0, min(20, int(timbre))) / 100
+    p = max(-30, min(30, round(((1 + int(pitch) / 100) / k - 1) * 100)))
+    r = max(60, min(140, round(int(rate) / k)))
+    return p, r, k
+
+
+def speed_up_wav(path, k: float) -> None:
+    """Ускорить WAV в k раз (частота дискретизации та же) — передискретизация через FFT."""
+    if k <= 1:
+        return
+    with wave.open(str(path), "rb") as w:
+        params = w.getparams()
+        a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(np.float64)
+    n = int(len(a) / k)
+    spec = np.fft.rfft(a)[: n // 2 + 1]             # отбрасываем то, что выше новой Найквиста
+    b = np.fft.irfft(spec, n) * (n / len(a))
+    with wave.open(str(path), "wb") as w:
+        w.setparams(params)
+        w.writeframes(np.clip(b, -32768, 32767).astype("<i2").tobytes())
 
 
 class Voice:
@@ -185,8 +215,10 @@ class Voice:
                 log.warning("нейроголос не запустился: %s", e)
                 self.on_problem("Нейроголос не запустился — говорю голосом Windows. Подробности в rem.log.")
                 return False
+        pitch, rate, k = timbre_params(pitch, rate, cfg.get("voice_timbre", 0))
         try:
             wav = self.neural.synth(text, cfg.get("silero_speaker", "xenia"), pitch, rate)
+            speed_up_wav(wav, k)
         except Exception as e:
             log.warning("нейроголос: %s", e)
             self.neural.close()

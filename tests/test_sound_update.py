@@ -8,7 +8,7 @@ import pytest
 from rem import update, voicepack
 from rem.echo import SpeakerTap, to_mono_16k
 from rem.listen import is_real_mic, pick_input, wake_from_speakers
-from rem.speech import sapi_params
+from rem.speech import sapi_params, speed_up_wav, timbre_params
 
 
 # ——— микрофон ———
@@ -105,6 +105,27 @@ def test_sapi_params():
     assert sapi_params(0, 100) == (0, 1)              # прежняя скорость Рэма
     assert sapi_params(15, 80) == (5, -4)
     assert sapi_params(-99, 999) == (-10, 10)
+
+
+def test_timbre_params():
+    assert timbre_params(25, 90, 0) == (25, 90, 1.0)    # без тембра — как раньше
+    assert timbre_params(25, 90, 10) == (14, 82, 1.1)   # после ускорения в 1,1 раза: +25 % и 90 %
+    assert timbre_params(-30, 60, 99)[:2] == (-30, 60)  # в пределах RemVoice
+
+
+def test_speed_up_wav_keeps_format(tmp_path):
+    import numpy as np, wave
+    p = tmp_path / "a.wav"
+    t = np.arange(24000) / 24000
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+        w.writeframes((np.sin(2 * np.pi * 200 * t) * 10000).astype("<i2").tobytes())
+    speed_up_wav(p, 1.25)
+    with wave.open(str(p)) as w:
+        assert w.getframerate() == 24000 and w.getnframes() == 19200
+        a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)
+    peak = np.argmax(np.abs(np.fft.rfft(a))) * 24000 / len(a)
+    assert abs(peak - 250) < 2                           # 200 Гц × 1,25
 
 
 FAKE_VOICE = textwrap.dedent('''

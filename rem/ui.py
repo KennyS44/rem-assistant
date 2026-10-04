@@ -350,6 +350,11 @@ class SettingsWindow:
                      values=list(self.voice_options)).pack(side="left", fill="x", expand=True)
         ttk.Button(vf, text="▶ Прослушать", command=self._preview).pack(side="left", padx=(PAD, 0))
         row("Голос", vf)
+        rf = ttk.Frame(f)
+        ttk.Button(rf, text="Как у Рем", command=self._rem_preset).pack(side="left")
+        ttk.Label(rf, text="подобранный нейроголос, высота, скорость и тембр",
+                  foreground="#666").pack(side="left", padx=(PAD, 0))
+        row("", rf)
         self.pack_status = ttk.Label(f, text="", foreground="#666", wraplength=380, justify="left")
         self.pack_status.grid(row=r, column=1, sticky="w")
         self.pack_btn = ttk.Button(f, text=f"Скачать нейроголос (~{voicepack.SIZE_MB} МБ)",
@@ -361,9 +366,12 @@ class SettingsWindow:
 
         self.pitch = tk.IntVar(value=int(self.cfg.get("voice_pitch", 0)))
         self.rate = tk.IntVar(value=int(self.cfg.get("voice_rate", 100)))
-        row("Высота", self._slider(f, self.pitch, -30, 30, lambda v: f"{v:+d} %"))
-        row("Скорость", self._slider(f, self.rate, 60, 140, lambda v: f"{v} %"),
-            "Ближе к аниме-образу: высота +10…+20 %, скорость около 90 %.")
+        self.timbre = tk.IntVar(value=int(self.cfg.get("voice_timbre", 0)))
+        self.sliders = {}
+        row("Высота", self._slider(f, self.pitch, -30, 30, lambda v: f"{v:+d} %", self.sliders))
+        row("Скорость", self._slider(f, self.rate, 60, 140, lambda v: f"{v} %", self.sliders))
+        row("Тембр", self._slider(f, self.timbre, 0, 15, lambda v: f"+{v} %", self.sliders),
+            "Моложе и звонче без изменения высоты. Только у нейроголоса.")
         self.rem_style = tk.BooleanVar(value=self.cfg.get("rem_style", False))
         row("", ttk.Checkbutton(f, text="Отвечать в стиле Рем: «Рэм слушает», «Сделано»",
                                 variable=self.rem_style))
@@ -393,21 +401,39 @@ class SettingsWindow:
         return f
 
     @staticmethod
-    def _slider(parent, var, lo, hi, fmt):
+    def _slider(parent, var, lo, hi, fmt, refs=None):
         box = ttk.Frame(parent)
         lbl = ttk.Label(box, text=fmt(var.get()), width=7)
 
         def moved(v):
             var.set(int(round(float(v) / 5) * 5))     # шаг 5 %
             lbl.config(text=fmt(var.get()))
-        ttk.Scale(box, from_=lo, to=hi, orient="horizontal", command=moved,
-                  value=var.get()).pack(side="left", fill="x", expand=True)
+        scale = ttk.Scale(box, from_=lo, to=hi, orient="horizontal", command=moved, value=var.get())
+        scale.pack(side="left", fill="x", expand=True)
         lbl.pack(side="left", padx=(PAD, 0))
+        if refs is not None:                          # чтобы двигать ползунок из кода
+            refs[str(var)] = (scale, lbl, fmt)
         return box
+
+    def _set_slider(self, var, value) -> None:
+        var.set(value)
+        scale, lbl, fmt = self.sliders[str(var)]
+        scale.set(value)
+        lbl.config(text=fmt(value))
+
+    def _rem_preset(self) -> None:
+        from .speech import REM_PRESET, SILERO_VOICES
+        self.voice_choice.set(f"Нейроголос: {SILERO_VOICES[REM_PRESET['silero_speaker']]}")
+        self._set_slider(self.pitch, REM_PRESET["voice_pitch"])
+        self._set_slider(self.rate, REM_PRESET["voice_rate"])
+        self._set_slider(self.timbre, REM_PRESET["voice_timbre"])
+        self.rem_style.set(True)
+        self._preview()
 
     def _voice_settings(self) -> dict:
         engine, key = self.voice_options[self.voice_choice.get()]
-        out = {"voice_engine": engine, "voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get())}
+        out = {"voice_engine": engine, "voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get()),
+               "voice_timbre": int(self.timbre.get())}
         if engine == "silero":
             out["silero_speaker"] = key
         else:

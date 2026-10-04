@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import subprocess
 import sys
@@ -63,9 +64,10 @@ class NeuralVoice:
     def __init__(self, cmd: list[str] | None = None, start_timeout: float = 60):
         cmd = cmd or [str(exe_path()), "--model", str(model_path())]
         flags = 0x08000000 if sys.platform == "win32" else 0      # CREATE_NO_WINDOW
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}          # кириллица в ответах на Windows
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, encoding="utf-8",
-                                     creationflags=flags)
+                                     creationflags=flags, env=env)
         self.lines: queue.Queue = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
         first = self._next(start_timeout)

@@ -14,12 +14,10 @@ a = Analysis(
     pathex=[".."],
     binaries=binaries,
     datas=datas,
-    hookspath=["hooks"],                     # свои хуки важнее стандартных
     hiddenimports=[
         "pystray._win32",                    # бэкенд трея выбирается динамически
         "win32com.client", "pythoncom",
         "pycaw.pycaw", "comtypes.stream",
-        "webrtcvad",
     ],
     excludes=["matplotlib", "scipy", "pandas", "torch", "IPython", "pytest"],
     noarchive=False,

@@ -184,18 +184,43 @@ class ASR:
         return self.model.recognize(audio, sample_rate=RATE).strip()
 
 
-# ——— запись речи с определением конца фразы ———
+# ——— определение речи по громкости ———
 
-def record_phrase(mic: Microphone, max_wait: float = 5.0, max_len: float = 10.0,
-                  silence: float = 0.8, already_speaking: bool = False) -> np.ndarray | None:
+class NoiseFloor:
+    """Уровень фонового шума комнаты: 20-й перцентиль громкости за последние 5 секунд.
+    Речь — когда кусок заметно громче фона. Обновляется постоянно, поэтому
+    подстраивается под вентилятор, музыку тихо фоном и т. п."""
+
+    def __init__(self, window: int = 50):
+        self.levels: collections.deque[float] = collections.deque(maxlen=window)
+
+    @staticmethod
+    def rms(chunk: np.ndarray) -> float:
+        return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+
+    def update(self, chunk: np.ndarray) -> float:
+        level = self.rms(chunk)
+        self.levels.append(level)
+        return level
+
+    @property
+    def floor(self) -> float:
+        return float(np.percentile(self.levels, 20)) if self.levels else 0.0
+
+    def is_speech(self, chunk: np.ndarray) -> bool:
+        level = self.update(chunk)
+        return level > self.floor * 2.5 + 150
+
+
+def record_phrase(mic: Microphone, noise: NoiseFloor | None = None, max_wait: float = 5.0,
+                  max_len: float = 10.0, silence: float = 0.8,
+                  already_speaking: bool = False) -> np.ndarray | None:
     """Пишет речь до паузы в silence секунд.
 
     already_speaking=False — сначала ждёт начала речи до max_wait секунд;
     already_speaking=True — человек уже говорит (дослушиваем фразу после сторожа).
     """
-    import webrtcvad
-    vad = webrtcvad.Vad(2)
-    frame = 480                                    # 30 мс
+    noise = noise or NoiseFloor()
     started, quiet, chunks = already_speaking, 0.0, []
     t0 = time.monotonic()
     while True:
@@ -205,9 +230,7 @@ def record_phrase(mic: Microphone, max_wait: float = 5.0, max_len: float = 10.0,
                 break
             quiet += 0.5 if started else 0
             continue
-        voiced = sum(vad.is_speech(c[i:i + frame].tobytes(), RATE)
-                     for i in range(0, len(c) - frame + 1, frame))
-        if voiced >= 2:
+        if noise.is_speech(c):
             started, quiet = True, 0.0
         elif started:
             quiet += len(c) / RATE
@@ -229,6 +252,7 @@ class Listener:
         self.mic = mic
         self.paused = threading.Event()
         self.stopped = threading.Event()
+        self.noise = NoiseFloor()
         self.stats = {"guard": 0, "accepted": 0, "rejected": 0}
         self.set_wake(wake)
 
@@ -246,12 +270,13 @@ class Listener:
                 continue
             if self.paused.is_set():
                 continue
+            self.noise.update(chunk)
             audio = self.guard.feed(chunk)
             if audio is None:
                 continue
             self.stats["guard"] += 1
             # сторож мог закончить фразу на паузе после «Рэм,» — дослушиваем до конца речи
-            tail = record_phrase(self.mic, max_len=8, silence=0.7, already_speaking=True)
+            tail = record_phrase(self.mic, self.noise, max_len=8, silence=0.7, already_speaking=True)
             if tail is not None:
                 audio = np.concatenate([audio, tail])
             t = time.perf_counter()
@@ -273,12 +298,12 @@ class Listener:
 
     def hear_command(self) -> str:
         """После «голого» слова активации: записать и распознать команду."""
-        audio = record_phrase(self.mic)
+        audio = record_phrase(self.mic, self.noise)
         return self.asr.recognize(audio) if audio is not None else ""
 
     def hear_yes_no(self, timeout: float = 5.0) -> bool:
         """Подтверждение: True только на явное «да»."""
-        audio = record_phrase(self.mic, max_wait=timeout, max_len=3)
+        audio = record_phrase(self.mic, self.noise, max_wait=timeout, max_len=3)
         if audio is None:
             return False
         words = {_norm(w) for w in self.asr.recognize(audio).split()}

@@ -256,7 +256,7 @@ def selftest(report: str | None = None) -> int:
         check("папка «Загрузки» находится", bool(winapi.known_folder("downloads")))
         check("проверка полноэкранного окна", winapi.foreground_is_fullscreen() in (True, False))
         import importlib
-        for mod in ("vosk", "onnx_asr", "onnxruntime", "sounddevice", "webrtcvad", "pystray", "pycaw.pycaw",
+        for mod in ("vosk", "onnx_asr", "onnxruntime", "sounddevice", "pystray", "pycaw.pycaw",
                     "comtypes.client", "psutil", "PIL.ImageGrab"):
             try:
                 importlib.import_module(mod)

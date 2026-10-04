@@ -32,13 +32,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-          pip install numpy pyinstaller
+          pip install numpy scipy pyinstaller       # scipy нужен модели Silero
           pip install -r requirements.txt
 
       - name: Сборка RemVoice.exe
         run: |
           pyinstaller voice/rem_voice.py --name RemVoice --noconfirm --distpath dist --workpath build `
-            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas `
+            --exclude-module matplotlib --exclude-module pandas `
             --exclude-module IPython --exclude-module tkinter --exclude-module pytest
           "{0:N0} МБ в папке" -f ((Get-ChildItem dist\RemVoice -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 

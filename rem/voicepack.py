@@ -24,7 +24,7 @@ log = logging.getLogger("rem.voicepack")
 
 PACK_URL = "https://github.com/KennyS44/rem-assistant/releases/download/voice-1/RemVoice.zip"
 MODEL_URL = "https://models.silero.ai/models/tts/ru/v5_ru.pt"
-SIZE_MB = 420                       # примерно: программа ~280 МБ + модель 145 МБ
+SIZE_MB = 350                       # архив программы ~200 МБ + модель 145 МБ (на диске ~700 МБ)
 
 
 def voice_dir() -> Path:

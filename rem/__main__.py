@@ -285,7 +285,18 @@ def selftest(report: str | None = None) -> int:
     return 0 if ok else 1
 
 
+def _utf8_console() -> None:
+    """Консоль Windows по умолчанию в cp1252/cp866 — кириллица в ней падает с ошибкой."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main() -> int:
+    _utf8_console()
     ap = argparse.ArgumentParser(prog="rem", description="Рэм — локальный голосовой помощник")
     ap.add_argument("--text", help="выполнить команду текстом")
     ap.add_argument("--dry", action="store_true", help="только показать план")

@@ -1,0 +1,214 @@
+import datetime as dt
+import json
+import time
+from pathlib import Path
+
+import pytest
+
+from rem import config as cfgmod
+from rem.assistant import Assistant
+from rem.brain import Plan, build_schema, validate
+from rem.listen import find_wake
+from rem.skills import active_skills
+from rem.skills.apps import AppIndex
+from rem.skills.custom import build_custom, parse_keys
+from rem.skills.system import tell_date, tell_time
+from rem.skills.web import site_url
+from rem.text import duration_ru, plural, translit
+from rem.timers import Timers
+
+SKILLS = active_skills(cfgmod.DEFAULTS)
+
+
+# ——— слово активации ———
+
+@pytest.mark.parametrize("text,expected", [
+    ("Рэм, открой браузер.", (True, "открой браузер")),
+    ("Рем, сделай громче", (True, "сделай громче")),
+    ("Эй, Рэм, включи музыку.", (True, "включи музыку")),
+    ("Ремм, поставь таймер на 5 минут.", (True, "поставь таймер на 5 минут")),
+    ("Рэм.", (True, "")),
+    ("Сколько сейчас времени? Рэм, сделай громче.", (True, "сделай громче")),
+    ("Сколько сейчас времени? Рэм.", (True, "")),       # команда прозвучит следом
+    ("Открой браузер, Рэм.", (True, "Открой браузер")),
+])
+def test_wake_found(text, expected):
+    assert find_wake(text, "рэм") == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Мы пошли с тремя друзьями", "Сколько времени", "Теорема Пифагора", "Рэмбо первая кровь",
+    "Эм, ну не знаю", "Привет, как дела",
+    "И тут пришёл Рэм",                       # о нём, а не к нему: без запятой
+    "Вчера смотрел аниме про Рэм и Рам.",
+])
+def test_wake_rejected(text):
+    assert find_wake(text, "рэм")[0] is False
+
+
+def test_near_spelling_rejected_if_real_word():
+    real = {"крем", "рам"}
+    assert find_wake("Крем для рук", "рэм", lambda w: w in real)[0] is False
+    assert find_wake("Рам на сервере", "рэм", lambda w: w in real)[0] is False
+    assert find_wake("Рям, открой браузер", "рэм", lambda w: w in real) == (True, "открой браузер")
+
+
+def test_custom_wake_word():
+    assert find_wake("Пятница, который час?", "пятница") == (True, "который час")
+
+
+# ——— ответ модели ———
+
+def test_validate_clamps_and_filters():
+    raw = {"actions": [
+        {"skill": "volume_set", "args": {"level": 150}},
+        {"skill": "format_disk", "args": {}},                       # такого умения нет
+        {"skill": "open_folder", "args": {"folder": "system32"}},   # не из списка
+        {"skill": "open_app", "args": {}},                           # нет обязательного
+    ], "reply": " "}
+    plan = validate(raw, SKILLS)
+    assert plan.actions == [("volume_set", {"level": 100})]
+    assert plan.reply == ""
+
+
+def test_validate_optional_params():
+    plan = validate({"actions": [{"skill": "set_timer", "args": {"seconds": "90"}}], "reply": ""}, SKILLS)
+    assert plan.actions == [("set_timer", {"seconds": 90})]
+
+
+def test_no_fake_success_without_action():
+    plan = validate({"actions": [], "reply": "Компьютер выключен."}, SKILLS)
+    assert plan.actions == [] and plan.reply == ""
+    plan = validate({"actions": [], "reply": "Этого я пока не умею."}, SKILLS)
+    assert plan.reply == "Этого я пока не умею."
+
+
+def test_schema_lists_every_skill():
+    schema = build_schema(SKILLS)
+    consts = {v["properties"]["skill"]["const"] for v in schema["properties"]["actions"]["items"]["anyOf"]}
+    assert consts == {s.name for s in SKILLS}
+
+
+def test_disabled_and_confirm_overrides():
+    cfg = {**cfgmod.DEFAULTS, "disabled_skills": ["screenshot"], "confirm_overrides": {"lock_pc": True}}
+    skills = {s.name: s for s in active_skills(cfg)}
+    assert "screenshot" not in skills
+    assert skills["lock_pc"].confirm is True
+    assert {s.name: s for s in SKILLS}["lock_pc"].confirm is False     # оригинал не тронут
+
+
+# ——— пользовательские умения ———
+
+def test_parse_keys():
+    assert parse_keys("win+shift+s") == [0x5B, 0x10, ord("S")]
+    assert parse_keys("Ctrl + F5") == [0x11, 0x74]
+    with pytest.raises(ValueError):
+        parse_keys("win+суперкнопка")
+
+
+def test_build_custom():
+    skills = build_custom([
+        {"title": "Открыть Discord", "type": "open", "target": "C:/d.lnk", "phrases": "дискорд, дис"},
+        {"title": "", "type": "open", "target": "x"},                 # пустое — пропускаем
+        {"title": "Скриншот области", "type": "keys", "target": "win+shift+s", "confirm": True},
+    ])
+    assert [s.title for s in skills] == ["Открыть Discord", "Скриншот области"]
+    assert "дискорд" in skills[0].examples and skills[1].confirm
+
+
+# ——— программы ———
+
+def test_app_index(tmp_path: Path):
+    for name in ["Discord", "Telegram Desktop", "Steam", "Uninstall Steam", "Google Chrome"]:
+        (tmp_path / f"{name}.lnk").write_text("")
+    idx = AppIndex([tmp_path])
+    assert "uninstall steam" not in idx.apps
+    assert idx.resolve("Discord")[0] == "discord"
+    assert idx.resolve("дискорд")[0] == "discord"          # транслитерация
+    assert idx.resolve("телега")[0] == "telegram desktop"  # синоним
+    assert idx.resolve("хром")[0] == "google chrome"
+    assert idx.resolve("калькулятор") == ("калькулятор", "calc.exe")
+    assert idx.resolve("фотошоп") is None
+
+
+# ——— мелочи ———
+
+def test_site_url():
+    assert site_url("youtube.com") == "https://youtube.com"
+    assert site_url("ютуб") == "https://youtube.com"
+    assert site_url("https://ya.ru/x") == "https://ya.ru/x"
+    assert site_url("кулинарный блог").startswith("https://www.google.com/search?q=")
+
+
+def test_russian_text():
+    assert plural(1, "минута", "минуты", "минут") == "минута"
+    assert plural(3, "минута", "минуты", "минут") == "минуты"
+    assert plural(11, "минута", "минуты", "минут") == "минут"
+    assert duration_ru(90) == "1 минуту 30 секунд"
+    assert translit("дискорд") == "diskord"
+    assert tell_time(None, dt.datetime(2026, 1, 1, 14, 5)) == "14 часов 5 минут."
+    assert tell_time(None, dt.datetime(2026, 1, 1, 21, 0)) == "Ровно 21 час."
+    assert tell_date(None, dt.datetime(2026, 10, 4)) == "Сегодня воскресенье, 4 октября."
+
+
+def test_timers():
+    fired = []
+    t = Timers(fired.append)
+    t.start(0.1, "готово")
+    t.start(5, "не успеет")
+    time.sleep(0.3)
+    assert fired == ["готово"]
+    assert t.cancel_all() == 1
+
+
+def test_config_roundtrip_and_broken_file(tmp_path: Path):
+    p = tmp_path / "config.json"
+    cfgmod.save({**cfgmod.DEFAULTS, "wake_word": "пятница"}, p)
+    assert cfgmod.load(p)["wake_word"] == "пятница"
+    p.write_text("{битый json", encoding="utf-8")
+    assert cfgmod.load(p)["wake_word"] == "рэм"                   # не падаем
+    assert (tmp_path / "config.broken.json").exists()
+
+
+# ——— ядро без микрофона и модели ———
+
+class FakeClient:
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls = 0
+
+    def chat(self, *a, **k):
+        self.calls += 1
+        return self.answer
+
+    chat_tools = chat
+
+
+def test_assistant_fast_path_skips_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(cfgmod, "app_dir", lambda: tmp_path)
+    client = FakeClient({"actions": [], "reply": ""})
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    plan = a.handle("громкость 30", dry_run=True)
+    assert plan.source == "fast" and client.calls == 0
+    rec = json.loads(a.journal.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["text"] == "громкость 30"
+
+
+def test_assistant_uses_model_and_confirm_blocks_without_mic(tmp_path):
+    client = FakeClient({"actions": [{"skill": "shutdown_pc", "args": {}}], "reply": ""})
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    plan = a.handle("вырубай комп нафиг")
+    assert client.calls == 1 and plan.actions == [("shutdown_pc", {})]
+    rec = json.loads(a.journal.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["actions"][0][2] == "отменено"        # без микрофона подтвердить нельзя → не выключаем
+
+
+def test_game_mode_fast_only(tmp_path):
+    client = FakeClient({"actions": [{"skill": "open_app", "args": {"name": "Steam"}}], "reply": ""})
+    a = Assistant({**cfgmod.DEFAULTS, "game_mode": "fast_only"}, client=client, apps=AppIndex([]))
+    a.game_mode = True
+    assert a.plan("громче").source == "fast"
+    assert a.plan("открой мне стим").source == "fast"            # известная программа — без модели
+    assert a.plan("найди рецепт борща").source == "game" and client.calls == 0

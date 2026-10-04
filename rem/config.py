@@ -1,0 +1,55 @@
+"""Настройки: %APPDATA%\\Rem\\config.json. Неизвестные ключи сохраняются как есть."""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+DEFAULTS: dict = {
+    "wake_word": "рэм",
+    "model": "qwen3:4b-instruct-2507-q4_K_M",
+    "ollama_url": "http://127.0.0.1:11434",
+    "brain_mode": "tools",        # tools — родной вызов функций; schema — ответ по JSON-схеме
+    "keep_alive_min": 3,          # сколько минут держать модель в видеопамяти после команды
+    "game_mode": "fast_only",     # при полноэкранной игре: fast_only | cpu | off
+    "asr_threads": 3,             # ядра на распознавание речи (из 6)
+    "search_engine": "google",    # google | yandex
+    "voice": "",                  # голос Windows; пусто — первый русский
+    "speak_replies": True,
+    "mic_device": None,           # None — микрофон по умолчанию
+    "disabled_skills": [],
+    "confirm_overrides": {},
+    "custom_skills": [],
+}
+
+
+def app_dir() -> Path:
+    base = os.environ.get("APPDATA") if sys.platform == "win32" else None
+    d = Path(base) / "Rem" if base else Path.home() / ".rem"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def config_path() -> Path:
+    return app_dir() / "config.json"
+
+
+def load(path: Path | None = None) -> dict:
+    path = path or config_path()
+    cfg = dict(DEFAULTS)
+    try:
+        cfg.update(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError):
+        # битый файл не должен ломать запуск: сохраняем копию и стартуем с настроек по умолчанию
+        path.replace(path.with_suffix(".broken.json"))
+    return cfg
+
+
+def save(cfg: dict, path: Path | None = None) -> None:
+    path = path or config_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)               # атомарно: при сбое старый файл останется целым

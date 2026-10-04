@@ -179,6 +179,8 @@ class Assistant:
         if not dry_run:
             if replies:
                 self.say(" ".join(dict.fromkeys(replies)))
+            elif plan.actions and self.config.get("rem_style") and self.voice:
+                self.say("Сделано.")
             elif plan.actions:
                 self._sound("done")
             else:

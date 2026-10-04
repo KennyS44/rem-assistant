@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw
 
-from . import autostart, config as cfgmod
+from . import __version__, autostart, config as cfgmod
 from .skills import REGISTRY
 
 STATE_COLORS = {
@@ -89,6 +89,8 @@ class UI:
               lambda: self.app.toggle_pause()),
             m("Настройки…", lambda: self.call(self.open_settings), default=True),
             m("Проверить слово активации…", lambda: self.call(self.open_wake_test)),
+            m(lambda _: f"Установить обновление {self.app.pending_update[0]}" if self.app.pending_update else "",
+              lambda: self.call(self._confirm_update), visible=lambda _: bool(self.app.pending_update)),
             m("Журнал команд", lambda: self._open(self.app.assistant.journal)),
             m("Папка с настройками", lambda: self._open(cfgmod.app_dir())),
             pystray.Menu.SEPARATOR,
@@ -110,6 +112,25 @@ class UI:
                 self.icon.notify(text, "Рэм")
             except Exception:
                 pass
+
+    # ——— обновление ———
+
+    def offer_update(self, version: str, path) -> None:
+        if self.icon:
+            self.icon.update_menu()
+        self._confirm_update()
+
+    def _confirm_update(self) -> None:
+        if not self.app.pending_update:
+            return
+        version, path = self.app.pending_update
+        if messagebox.askyesno(
+                "Рэм — обновление",
+                f"Вышла новая версия Рэм: {version} (сейчас {__version__}).\n\n"
+                "Установить сейчас? Это займёт около минуты, потом Рэм запустится сам. "
+                "Настройки, модели и голос сохранятся.\n\n"
+                "«Нет» — позже: пункт «Установить обновление» будет в меню значка."):
+            self.app.install_update(path)
 
     def uninstall(self) -> None:
         """Запускает деинсталлятор: он спросит, что удалить, и сам остановит Рэм."""
@@ -228,6 +249,7 @@ class SettingsWindow:
         nb = ttk.Notebook(w)
         nb.pack(fill="both", expand=True, padx=PAD, pady=PAD)
         nb.add(self._general(nb), text="Основное")
+        nb.add(self._voice_tab(nb), text="Голос и звук")
         nb.add(self._skills(nb), text="Умения")
         nb.add(self._custom_tab(nb), text="Мои умения")
         nb.add(self._try_tab(nb), text="Проверка")
@@ -279,11 +301,165 @@ class SettingsWindow:
         self.engine = tk.StringVar(value=self.cfg.get("search_engine", "google"))
         row("Поиск", ttk.Combobox(f, textvariable=self.engine, state="readonly", values=["google", "yandex"]))
 
-        self.speak = tk.BooleanVar(value=self.cfg.get("speak_replies", True))
-        row("", ttk.Checkbutton(f, text="Отвечать голосом", variable=self.speak))
         self.auto = tk.BooleanVar(value=autostart.is_enabled())
         row("", ttk.Checkbutton(f, text="Запускать вместе с Windows", variable=self.auto))
+
+        from . import update
+        self.auto_update = tk.BooleanVar(value=self.cfg.get("auto_update", True))
+        uf = ttk.Frame(f)
+        ttk.Checkbutton(uf, text="Обновляться автоматически", variable=self.auto_update).pack(side="left")
+        if update.can_update():
+            ttk.Button(uf, text="Проверить сейчас",
+                       command=lambda: threading.Thread(target=self.app.check_update, daemon=True).start()
+                       ).pack(side="left", padx=PAD)
+        row("", uf, f"Версия {__version__}. Новая версия скачивается в фоне, а ставится только "
+                    "после твоего «да» — поверх текущей, с сохранением настроек и моделей.")
         return f
+
+    # вкладка «Голос и звук»
+    def _voice_tab(self, nb):
+        from . import voicepack
+        from .speech import SILERO_VOICES
+        f = ttk.Frame(nb, padding=16)
+        f.columnconfigure(1, weight=1)
+        r = 0
+
+        def row(label, widget, hint=""):
+            nonlocal r
+            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=4, padx=(0, 12))
+            widget.grid(row=r, column=1, sticky="ew", pady=4)
+            r += 1
+            if hint:
+                ttk.Label(f, text=hint, foreground="#666", wraplength=380, justify="left").grid(
+                    row=r, column=1, sticky="w", pady=(0, 8))
+                r += 1
+
+        # голос: нейроголоса Silero и голоса Windows одним списком
+        self.voice_options = {f"Нейроголос: {title}": ("silero", key) for key, title in SILERO_VOICES.items()}
+        for name in (self.app.voice.voices if self.app.voice else []):
+            self.voice_options[f"Windows: {name}"] = ("windows", name)
+        if not any(e == "windows" for e, _ in self.voice_options.values()):
+            self.voice_options["Windows: русский по умолчанию"] = ("windows", "")
+        current = ("silero", self.cfg.get("silero_speaker", "xenia")) if self.cfg.get("voice_engine") == "silero" \
+            else ("windows", self.cfg.get("voice", ""))
+        label = next((k for k, v in self.voice_options.items() if v == current),
+                     next(k for k, v in self.voice_options.items() if v[0] == "windows"))
+        self.voice_choice = tk.StringVar(value=label)
+        vf = ttk.Frame(f)
+        ttk.Combobox(vf, textvariable=self.voice_choice, state="readonly",
+                     values=list(self.voice_options)).pack(side="left", fill="x", expand=True)
+        ttk.Button(vf, text="▶ Прослушать", command=self._preview).pack(side="left", padx=(PAD, 0))
+        row("Голос", vf)
+        self.pack_status = ttk.Label(f, text="", foreground="#666", wraplength=380, justify="left")
+        self.pack_status.grid(row=r, column=1, sticky="w")
+        self.pack_btn = ttk.Button(f, text=f"Скачать нейроголос (~{voicepack.SIZE_MB} МБ)",
+                                   command=self._download_voice)
+        self.pack_btn.grid(row=r + 1, column=1, sticky="w", pady=(4, 8))
+        r += 2
+        self.voice_choice.trace_add("write", lambda *_: self._voice_pack_state())
+        self._voice_pack_state()
+
+        self.pitch = tk.IntVar(value=int(self.cfg.get("voice_pitch", 0)))
+        self.rate = tk.IntVar(value=int(self.cfg.get("voice_rate", 100)))
+        row("Высота", self._slider(f, self.pitch, -30, 30, lambda v: f"{v:+d} %"))
+        row("Скорость", self._slider(f, self.rate, 60, 140, lambda v: f"{v} %"),
+            "Ближе к аниме-образу: высота +10…+20 %, скорость около 90 %.")
+        self.rem_style = tk.BooleanVar(value=self.cfg.get("rem_style", False))
+        row("", ttk.Checkbutton(f, text="Отвечать в стиле Рем: «Рэм слушает», «Сделано»",
+                                variable=self.rem_style))
+        self.speak = tk.BooleanVar(value=self.cfg.get("speak_replies", True))
+        row("", ttk.Checkbutton(f, text="Отвечать голосом", variable=self.speak))
+
+        ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="ew", pady=12)
+        r += 1
+        from .listen import input_devices, is_real_mic
+        try:
+            names = [n for _, n in input_devices()]
+        except Exception:
+            names = []
+        self.mic_auto = "Автоматически (микрофон Windows по умолчанию)"
+        mics = [self.mic_auto] + [n + ("" if is_real_mic(n) else "  — не микрофон") for n in names]
+        cur = self.cfg.get("mic_device")
+        self.mic = tk.StringVar(value=next((m for m in mics[1:] if cur and m.startswith(cur)), self.mic_auto))
+        row("Микрофон", ttk.Combobox(f, textvariable=self.mic, state="readonly", values=mics),
+            "«Стерео микшер» и похожие — это звук компьютера, а не микрофон.")
+        self.ignore_speakers = tk.BooleanVar(value=self.cfg.get("ignore_speakers", True))
+        sp = self.app.speakers
+        state = ("" if not self.app.listener else
+                 " — работает" if sp and sp.available else " — сейчас недоступно")
+        row("", ttk.Checkbutton(f, text="Не реагировать на «Рэм» из колонок" + state,
+                                variable=self.ignore_speakers),
+            "Например, «Рем» в аниме. Свой голос Рэм тоже не слушает.")
+        return f
+
+    @staticmethod
+    def _slider(parent, var, lo, hi, fmt):
+        box = ttk.Frame(parent)
+        lbl = ttk.Label(box, text=fmt(var.get()), width=7)
+
+        def moved(v):
+            var.set(int(round(float(v) / 5) * 5))     # шаг 5 %
+            lbl.config(text=fmt(var.get()))
+        ttk.Scale(box, from_=lo, to=hi, orient="horizontal", command=moved,
+                  value=var.get()).pack(side="left", fill="x", expand=True)
+        lbl.pack(side="left", padx=(PAD, 0))
+        return box
+
+    def _voice_settings(self) -> dict:
+        engine, key = self.voice_options[self.voice_choice.get()]
+        out = {"voice_engine": engine, "voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get())}
+        if engine == "silero":
+            out["silero_speaker"] = key
+        else:
+            out["voice"] = key
+        return out
+
+    def _voice_pack_state(self) -> None:
+        from . import voicepack
+        neural = self.voice_options[self.voice_choice.get()][0] == "silero"
+        if not neural:
+            self.pack_status.config(text="")
+            self.pack_btn.grid_remove()
+        elif voicepack.ready():
+            self.pack_status.config(text="Нейроголос скачан, работает на процессоре.")
+            self.pack_btn.grid_remove()
+        else:
+            self.pack_status.config(text="Нейроголос скачивается один раз. Пока его нет, "
+                                         "Рэм говорит голосом Windows.")
+            self.pack_btn.grid()
+
+    def _download_voice(self) -> None:
+        from . import voicepack
+        self.pack_btn.state(["disabled"])
+        win, update, close = self.ui.progress_window("Скачиваю нейроголос (один раз)")
+
+        def work():
+            try:
+                voicepack.ensure(update)
+                ok, err = True, ""
+            except Exception as e:
+                ok, err = False, str(e)
+                self.app.log.warning("нейроголос не скачался: %s", e)
+            finally:
+                close()
+
+            def done():
+                if not self.win.winfo_exists():
+                    return
+                self.pack_btn.state(["!disabled"])
+                if not ok:
+                    messagebox.showwarning("Рэм", f"Не удалось скачать нейроголос:\n{err}", parent=self.win)
+                self._voice_pack_state()
+            self.ui.call(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _preview(self) -> None:
+        from . import voicepack
+        s = self._voice_settings()
+        if s["voice_engine"] == "silero" and not voicepack.ready():
+            messagebox.showinfo("Рэм", "Сначала скачай нейроголос — кнопка под списком голосов.", parent=self.win)
+            return
+        self.app.voice.preview({**self.app.config, **s})
 
     def _check_wake(self):
         w = self.wake.get().strip().lower()
@@ -497,12 +673,19 @@ class SettingsWindow:
                                    parent=self.win)
             return
         c = self.app.config
+        old = dict(c)
         c["wake_word"] = wake
         c["model"] = self.model.get().strip()
         c["keep_alive_min"] = max(1, min(30, int(self.keep.get())))
         c["game_mode"] = next(k for k, v in self.GAME_MODES.items() if v == self.game.get())
         c["search_engine"] = self.engine.get()
         c["speak_replies"] = bool(self.speak.get())
+        c.update(self._voice_settings())
+        c["rem_style"] = bool(self.rem_style.get())
+        mic = self.mic.get()
+        c["mic_device"] = None if mic == self.mic_auto else mic.removesuffix("  — не микрофон")
+        c["ignore_speakers"] = bool(self.ignore_speakers.get())
+        c["auto_update"] = bool(self.auto_update.get())
         c["disabled_skills"] = [n for n, (on, _, _) in self.skill_vars.items() if not on.get()]
         c["confirm_overrides"] = {n: ask.get() for n, (_, ask, default) in self.skill_vars.items()
                                   if ask.get() != default}
@@ -512,5 +695,5 @@ class SettingsWindow:
             autostart.set_enabled(bool(self.auto.get()))
         except OSError:
             pass
-        self.app.apply_config()
+        self.app.apply_config(old)
         self.win.destroy()

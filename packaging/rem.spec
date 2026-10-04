@@ -13,7 +13,7 @@ datas = (
     + collect_data_files("vosk")
     + copy_metadata("onnx_asr")
 )
-binaries = collect_dynamic_libs("vosk")      # libvosk.dll и зависимости
+binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("pyaudiowpatch")   # libvosk.dll, portaudio
 
 a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
@@ -24,6 +24,7 @@ a = Analysis(
         "pystray._win32",                    # бэкенд трея выбирается динамически
         "win32com.client", "pythoncom",
         "pycaw.pycaw", "comtypes.stream",
+        "pyaudiowpatch",                     # звук колонок (импорт внутри функции)
     ],
     excludes=["matplotlib", "scipy", "pandas", "torch", "IPython", "pytest"],
     noarchive=False,

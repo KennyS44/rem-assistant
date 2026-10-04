@@ -90,6 +90,47 @@ def find_wake(text: str, wake: str, is_word=lambda w: False) -> tuple[bool, str]
 
 # ——— микрофон ———
 
+# Входы, которые на самом деле не микрофон, а звук самого компьютера
+NOT_MIC = ("stereo mix", "стерео микшер", "what u hear", "wave out", "loopback", "cable output")
+
+
+def is_real_mic(name: str) -> bool:
+    n = name.lower()
+    return not any(x in n for x in NOT_MIC)
+
+
+def input_devices() -> list[tuple[int, str]]:
+    """Входы (индекс, имя) в системном API по умолчанию. Каждый вход Windows виден
+    по нескольку раз (MME, WASAPI…) — берём один набор. «Переназначение звука» — не вход."""
+    import sounddevice as sd
+    api = sd.default.hostapi
+    return [(i, d["name"]) for i, d in enumerate(sd.query_devices())
+            if d["max_input_channels"] > 0 and d["hostapi"] == api
+            and not d["name"].lower().startswith(("microsoft sound mapper", "переназначение", "первичный драйвер"))]
+
+
+def pick_input(wanted: str | None) -> int | None:
+    """Номер устройства для записи. wanted — имя из настроек (или его начало);
+    пусто — вход Windows по умолчанию, если это настоящий микрофон, иначе первый микрофон."""
+    import sounddevice as sd
+    inputs = input_devices()
+    if wanted:
+        for i, name in inputs:
+            if name == wanted or name.startswith(wanted) or wanted.startswith(name):
+                return i
+        log.warning("микрофон «%s» не найден — беру по умолчанию", wanted)
+    try:
+        default = sd.query_devices(kind="input")
+    except Exception:
+        default = None
+    if default and is_real_mic(default["name"]):
+        return None                              # пусть Windows решает: переживёт смену устройства
+    if default:
+        log.warning("вход по умолчанию «%s» — это не микрофон", default["name"])
+    mics = [i for i, name in inputs if is_real_mic(name)]
+    return mics[0] if mics else None
+
+
 class Microphone:
     """Поток с микрофона кусками по 100 мс, 16 кГц, моно, int16."""
 
@@ -184,6 +225,25 @@ class ASR:
         return self.model.recognize(audio, sample_rate=RATE).strip()
 
 
+# ——— звук из колонок ———
+
+def rms(audio: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(audio.astype(np.float32) ** 2))) if len(audio) else 0.0
+
+
+def wake_from_speakers(asr: ASR, speaker_audio: np.ndarray | None, wake: str, is_word=lambda w: False) -> bool:
+    """Звучало ли слово активации из колонок в то же время, что и в микрофоне.
+
+    Если да — микрофон услышал фильм или видео («Рем» в аниме), а не человека.
+    Тихие колонки не проверяем: распознавание стоит ~0,4 с.
+    """
+    if speaker_audio is None or rms(speaker_audio) < 100:
+        return False
+    text = asr.recognize(speaker_audio)
+    # в фильме слово может стоять где угодно: «…и тут Рем пришла»
+    return find_wake(text, wake, is_word)[0] or any(_norm(w) == _norm(wake) for w in text.split())
+
+
 # ——— определение речи по громкости ———
 
 class NoiseFloor:
@@ -246,14 +306,17 @@ def record_phrase(mic: Microphone, noise: NoiseFloor | None = None, max_wait: fl
 class Listener:
     """Склеивает всё вместе. listen() блокирует поток и вызывает колбэки."""
 
-    def __init__(self, vosk_model, asr: ASR, wake: str, mic: Microphone):
+    def __init__(self, vosk_model, asr: ASR, wake: str, mic: Microphone,
+                 speakers=None, mute: threading.Event | None = None):
         self.vosk_model = vosk_model
         self.asr = asr
         self.mic = mic
+        self.speakers = speakers                # echo.SpeakerTap — что играет в колонках
+        self.mute = mute                        # пока Рэм говорит сам — не слушаем
         self.paused = threading.Event()
         self.stopped = threading.Event()
         self.noise = NoiseFloor()
-        self.stats = {"guard": 0, "accepted": 0, "rejected": 0}
+        self.stats = {"guard": 0, "accepted": 0, "rejected": 0, "speakers": 0}
         self.set_wake(wake)
 
     def set_wake(self, wake: str) -> None:
@@ -264,11 +327,17 @@ class Listener:
         return self.vosk_model.vosk_model_find_word(w) >= 0
 
     def listen(self, on_command, on_wake_only, on_rejected=None) -> None:
+        deaf_until = 0.0
         while not self.stopped.is_set():
             chunk = self.mic.read(timeout=0.5)
             if chunk is None:
                 continue
             if self.paused.is_set():
+                continue
+            if self.mute is not None and self.mute.is_set():
+                deaf_until = time.monotonic() + 0.4      # и хвост эха после фразы
+            if time.monotonic() < deaf_until:
+                self.guard.reset()
                 continue
             self.noise.update(chunk)
             audio = self.guard.feed(chunk)
@@ -283,6 +352,12 @@ class Listener:
             text = self.asr.recognize(audio)
             ok, command = find_wake(text, self.wake, self.is_word)
             log.info("сторож: «%s» → %s (%.2f с)", text, "да" if ok else "нет", time.perf_counter() - t)
+            if ok and self.speakers is not None:
+                heard = self.speakers.recent(len(audio) / RATE + 0.5)
+                if wake_from_speakers(self.asr, heard, self.wake, self.is_word):
+                    log.info("слово прозвучало из колонок — не реагирую")
+                    self.stats["speakers"] += 1
+                    ok = False
             if not ok:
                 self.stats["rejected"] += 1
                 if on_rejected:

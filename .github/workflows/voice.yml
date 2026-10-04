@@ -1,0 +1,74 @@
+name: Нейроголос (RemVoice)
+
+# Отдельная программа озвучки на torch. Меняется редко, поэтому свой релиз voice-N:
+# обновления Рэм её не перекачивают. Модель Silero не кладём в релиз — Рэм
+# скачивает её с сайта Silero (лицензия CC BY-NC-SA 4.0).
+
+on:
+  push:
+    tags: ["voice-*"]
+  pull_request:
+    paths: ["voice/**", ".github/workflows/voice.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install numpy pyinstaller
+          pip install -r requirements.txt
+
+      - name: Сборка RemVoice.exe
+        run: |
+          pyinstaller voice/rem_voice.py --name RemVoice --noconfirm --distpath dist --workpath build `
+            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas `
+            --exclude-module IPython --exclude-module tkinter --exclude-module pytest
+          "{0:N0} МБ в папке" -f ((Get-ChildItem dist\RemVoice -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Архив
+        run: |
+          Compress-Archive -Path dist\RemVoice -DestinationPath RemVoice.zip -CompressionLevel Optimal
+          "{0:N0} МБ в архиве" -f ((Get-Item RemVoice.zip).Length / 1MB)
+
+      - name: Рэм скачивает и использует голос так же, как по кнопке в настройках
+        timeout-minutes: 15
+        run: |
+          # голос из этой сборки кладём туда, куда его распаковал бы Рэм; модель Рэм скачает сам
+          $voice = Join-Path $env:APPDATA "Rem\voice"
+          New-Item -ItemType Directory -Force $voice | Out-Null
+          Expand-Archive RemVoice.zip -DestinationPath $voice -Force
+          python -m rem --voice-test --report voice.txt
+          $code = $LASTEXITCODE
+          if (Test-Path voice.txt) { Get-Content voice.txt }
+          if ($code -ne 0) { throw "Проверка нейроголоса не прошла" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemVoice
+          path: RemVoice.zip
+
+      - name: Релиз голоса
+        if: startsWith(github.ref, 'refs/tags/voice-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RemVoice.zip
+          name: Нейроголос ${{ github.ref_name }}
+          body: Программа озвучки для Рэм. Скачивается самим Рэм из настроек — вручную качать не нужно.
+          make_latest: false            # «последним» должен оставаться релиз с RemSetup.exe

@@ -24,6 +24,8 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
+; обновление из самого Рэм: он выходит сам, установщик запускает новую версию ([Run] ниже)
+RestartApplications=no
 
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -45,6 +47,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\Rem.exe"; Description: "Запустить Рэм"; Flags: postinstall nowait skipifsilent
+; тихое обновление (/UPDATE=1 из update.py) — запустить Рэм снова
+Filename: "{app}\Rem.exe"; Flags: nowait; Check: IsUpdate
 
 [UninstallRun]
 Filename: "taskkill.exe"; Parameters: "/f /im Rem.exe"; Flags: runhidden; RunOnceId: "StopRem"
@@ -74,6 +78,11 @@ begin
 end;
 
 { ——— установка ——— }
+
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
 
 procedure InitializeWizard;
 begin
@@ -155,7 +164,7 @@ begin
     Data.Left := ScaleX(16);
     Data.Top := Y;
     Data.Width := Form.ClientWidth - ScaleX(32);
-    Data.Caption := 'Настройки, журнал команд и модели речи (~300 МБ)';
+    Data.Caption := 'Настройки, журнал, модели речи и нейроголос (до ~700 МБ)';
     Data.Checked := True;
     Y := Y + ScaleY(26);
 

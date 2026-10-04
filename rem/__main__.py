@@ -4,6 +4,7 @@
     Rem.exe --text "громче"      — выполнить одну команду текстом (без микрофона)
     Rem.exe --text "..." --dry   — только показать, как понята команда
     Rem.exe --selftest           — самопроверка для автосборки (без микрофона и сети)
+    Rem.exe --voice-test         — проверка нейроголоса (скачивает его)
 """
 from __future__ import annotations
 
@@ -47,8 +48,10 @@ class App:
         self.test_mode = False
         self.stop = threading.Event()
         self.listener = None
+        self.speakers = None
         self.assistant = None
         self.ui = None
+        self.pending_update = None
 
     # ——— запуск ———
 
@@ -59,7 +62,8 @@ class App:
 
         winapi.set_low_priority()
         self.ui = UI(self)
-        self.voice = Voice(self.config.get("voice", ""))
+        self.voice = Voice(config=self.config)
+        self.voice.on_problem = lambda text: self.ui.call(self.ui.notify, text)
         self.sounds = Sounds(cfgmod.app_dir() / "sounds")
         self.assistant = Assistant(self.config, self.voice, self.sounds)
         self.assistant.status_cb = lambda s: self.ui.call(self._set_state, s)
@@ -71,7 +75,8 @@ class App:
     def _boot(self) -> None:
         """Подготовка в фоне: модели речи, Ollama, микрофон — и в работу."""
         from . import models
-        from .listen import ASR, Listener, Microphone
+        from .echo import SpeakerTap
+        from .listen import ASR, Listener, Microphone, pick_input
 
         try:
             if not models.speech_models_ready():
@@ -87,14 +92,19 @@ class App:
             vosk.SetLogLevel(-1)
             vmodel = vosk.Model(str(models.vosk_dir()))
             asr = ASR(models.gigaam_dir(), int(self.config.get("asr_threads", 3)))
-            mic = Microphone(self.config.get("mic_device"))
+            mic = Microphone(pick_input(self.config.get("mic_device")))
             mic.start()
         except Exception as e:
             self.log.exception("запуск не удался")
             self.ui.call(lambda: self._fatal(f"Рэм не смог запуститься:\n{e}"))
             return
 
-        self.listener = Listener(vmodel, asr, self.config["wake_word"], mic)
+        self.speakers = SpeakerTap()
+        if self.config.get("ignore_speakers", True):
+            self.speakers.start()
+        self.listener = Listener(vmodel, asr, self.config["wake_word"], mic,
+                                 speakers=self.speakers if self.speakers.available else None,
+                                 mute=self.voice.speaking)
         self.assistant.listener = self.listener
         self.ui.call(self.ui.start_tray)
         threading.Thread(target=self.assistant.watch_game_mode, args=(self.stop,), daemon=True).start()
@@ -102,6 +112,44 @@ class App:
                          args=(self._on_command, self._on_wake_only, None)).start()
         self.log.info("Рэм %s слушает, слово активации «%s»", __version__, self.config["wake_word"])
         self.ui.call(self.ui.notify, f"Рэм запущен. Скажи «{self.config['wake_word'].capitalize()}» и команду.")
+        threading.Thread(target=self._update_loop, name="update", daemon=True).start()
+
+    # ——— обновления ———
+
+    def _update_loop(self) -> None:
+        from . import update
+        if not update.can_update():
+            return
+        update.cleanup()
+        delay = 60                                  # не мешаем запуску
+        while not self.stop.wait(delay):
+            delay = 6 * 3600
+            if self.config.get("auto_update", True):
+                self.check_update(quiet=True)
+
+    def check_update(self, quiet: bool = False) -> None:
+        """Найти, скачать и предложить новую версию. quiet — молчать, если обновлений нет."""
+        from . import update
+        try:
+            rel = update.latest()
+            if not rel or not update.newer(rel.version):
+                if not quiet:
+                    self.ui.call(self.ui.notify, f"Установлена последняя версия Рэм ({__version__}).")
+                return
+            path = update.download(rel)
+        except Exception as e:
+            self.log.warning("обновление: %s", e)
+            if not quiet:
+                self.ui.call(self.ui.notify, "Не удалось проверить обновления — нет связи с GitHub.")
+            return
+        self.log.info("скачано обновление %s", rel.version)
+        self.pending_update = (rel.version, path)
+        self.ui.call(self.ui.offer_update, rel.version, path)
+
+    def install_update(self, path) -> None:
+        from . import update
+        update.install(path)
+        self.quit()
 
     def _ensure_ollama(self) -> None:
         cl = self.assistant.client
@@ -149,7 +197,12 @@ class App:
         if self.test_mode:
             return
         self._set_state("listening")
-        self.sounds.play("wake")
+        if self.config.get("rem_style"):
+            self.voice.say("Рэм слушает.")
+            self.voice.wait()
+            self.listener.mic.flush()
+        else:
+            self.sounds.play("wake")
         self.assistant.prewarm()                # пока человек говорит — грузим модель
         command = self.listener.hear_command()
         if command:
@@ -179,20 +232,46 @@ class App:
             self.state = "paused"
         self.ui.call(self.ui.set_state, self.state)
 
-    def apply_config(self) -> None:
-        """После сохранения настроек."""
+    def apply_config(self, old: dict | None = None) -> None:
+        """После сохранения настроек. old — настройки до изменения."""
+        old = old or {}
         self.assistant.config = self.config
         self.assistant.reload()
+        self.voice.configure(self.config)
         if self.listener:
             self.listener.set_wake(self.config["wake_word"])
+            if old.get("mic_device") != self.config.get("mic_device"):
+                self._switch_mic()
+            if old.get("ignore_speakers", True) != self.config.get("ignore_speakers", True):
+                if self.config.get("ignore_speakers", True):
+                    self.speakers.start()
+                else:
+                    self.speakers.stop()
+                self.listener.speakers = self.speakers if self.speakers.available else None
         if self.config["model"] not in (self.assistant.client.models() if self.assistant.client.available() else []):
             threading.Thread(target=self._ensure_ollama, daemon=True).start()
+
+    def _switch_mic(self) -> None:
+        from .listen import Microphone, pick_input
+        old = self.listener.mic
+        old.stop()
+        mic = Microphone(pick_input(self.config.get("mic_device")))
+        try:
+            mic.start()
+        except Exception as e:
+            self.log.warning("микрофон не открылся: %s — возвращаю прежний", e)
+            self.ui.call(self.ui.notify, "Этот микрофон не открылся — оставил прежний.")
+            mic = Microphone(old.device)
+            mic.start()
+        self.listener.mic = mic
 
     def quit(self) -> None:
         self.stop.set()
         if self.listener:
             self.listener.stopped.set()
             self.listener.mic.stop()
+        if self.speakers:
+            self.speakers.stop()
         if self.ui and self.ui.icon:
             self.ui.icon.stop()
         self.ui.root.after(100, self.ui.root.destroy)
@@ -259,6 +338,16 @@ def selftest(report: str | None = None) -> int:
     check("слово активации", find_wake("Рэм, открой браузер.", "рэм") == (True, "открой браузер"))
     check("ложное слово отсеяно", find_wake("Тремя друзьями", "рэм")[0] is False)
     check("звуки генерируются", len(_tone_wav([(440, 0.1)])) > 1000)
+    import numpy as np
+    from .echo import to_mono_16k
+    from .speech import sapi_params
+    from .update import from_api, newer
+    stereo48 = np.zeros(4800 * 2, dtype=np.int16).tobytes()
+    check("звук колонок: 48 кГц стерео → 16 кГц моно", len(to_mono_16k(stereo48, 2, 48000)) == 1600)
+    check("высота и темп голоса Windows", sapi_params(0, 100) == (0, 1) and sapi_params(30, 140) == (10, 10))
+    check("сравнение версий", newer("0.10.0", "0.9.9") and not newer("v0.1.0", "0.1.0"))
+    check("релиз с установщиком", from_api({"tag_name": "v9.0.0", "assets": [
+        {"name": "RemSetup.exe", "browser_download_url": "u", "size": 1}]}).version == "9.0.0")
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "c.json"
         cfgmod.save({**cfg, "wake_word": "пятница"}, p)
@@ -268,7 +357,7 @@ def selftest(report: str | None = None) -> int:
         check("проверка полноэкранного окна", winapi.foreground_is_fullscreen() in (True, False))
         import importlib
         for mod in ("vosk", "onnx_asr", "onnxruntime", "sounddevice", "pystray", "pycaw.pycaw",
-                    "comtypes.client", "psutil", "PIL.ImageGrab"):
+                    "comtypes.client", "psutil", "PIL.ImageGrab", "pyaudiowpatch"):
             try:
                 importlib.import_module(mod)
                 check(f"модуль {mod}", True)
@@ -317,7 +406,7 @@ def speech_test(wavs: list[str], report: str | None = None) -> int:
     import vosk
 
     from . import models
-    from .listen import ASR, CHUNK, WakeGuard, find_wake
+    from .listen import ASR, CHUNK, WakeGuard, find_wake, wake_from_speakers
 
     out: list[str] = []
 
@@ -354,7 +443,56 @@ def speech_test(wavs: list[str], report: str | None = None) -> int:
         ok = ok and good
         emit(f"{'OK  ' if good else 'FAIL'} {Path(path).name}: сторож={'да' if heard is not None else 'нет'}, "
              f"распознано «{text}» → {'команда «' + command + '»' if found else 'отсеяно'}")
+        # та же запись «из колонок»: слово в фильме — Рэм не просыпается; тишина — не мешает
+        echo = wake_from_speakers(asr, audio, "рэм", is_word)
+        quiet = wake_from_speakers(asr, np.zeros_like(audio), "рэм", is_word)
+        good = echo == want and not quiet
+        ok = ok and good
+        emit(f"{'OK  ' if good else 'FAIL'} {Path(path).name} из колонок: "
+             f"{'слово найдено — не реагирую' if echo else 'слова нет'}; тихие колонки не мешают: {not quiet}")
     emit("ИТОГ: " + ("речь работает" if ok else "есть ошибки"))
+    return 0 if ok else 1
+
+
+def voice_test(report: str | None = None) -> int:
+    """Нейроголос целиком: скачать (как по кнопке в настройках), запустить RemVoice,
+    озвучить фразу каждым голосом. Для автосборки — без проигрывания звука."""
+    import wave
+    from pathlib import Path
+
+    from . import voicepack
+    from .speech import PREVIEW, SILERO_VOICES
+
+    if report:
+        Path(report).write_text("", encoding="utf-8")
+
+    def emit(line):
+        print(line)
+        if report:
+            with open(report, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+
+    emit("…скачиваю нейроголос (если его нет)")
+    voicepack.ensure()
+    v = voicepack.NeuralVoice()
+    ok = True
+    try:
+        for key, title in SILERO_VOICES.items():
+            wav = v.synth(PREVIEW, key, 15, 90)
+            with wave.open(str(wav)) as w:
+                secs = w.getnframes() / w.getframerate()
+            good = secs > 1.5
+            ok = ok and good
+            emit(f"{'OK  ' if good else 'FAIL'} {title}: {secs:.1f} с")
+        try:
+            v.synth("проверка", "nobody")
+            ok = False
+            emit("FAIL неизвестный голос не вызвал ошибку")
+        except RuntimeError:
+            emit("OK   неизвестный голос — понятная ошибка")
+    finally:
+        v.close()
+    emit("ИТОГ: " + ("голос работает" if ok else "есть ошибки"))
     return 0 if ok else 1
 
 
@@ -367,6 +505,7 @@ def main() -> int:
     ap.add_argument("--report", help="файл для отчёта самопроверки")
     ap.add_argument("--speech-test", nargs="+", metavar="WAV", help="проверка распознавания на записях")
     ap.add_argument("--check-ollama", action="store_true", help="запустить Ollama, если не запущена")
+    ap.add_argument("--voice-test", action="store_true", help="проверка нейроголоса (скачает его)")
     ap.add_argument("--console", action="store_true", help="писать журнал в консоль")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args()
@@ -374,6 +513,8 @@ def main() -> int:
         return selftest(a.report)
     if a.speech_test:
         return speech_test(a.speech_test, a.report)
+    if a.voice_test:
+        return voice_test(a.report)
     if a.check_ollama:
         from .brain import Ollama
         ok = Ollama(cfgmod.load().get("ollama_url", "http://127.0.0.1:11434")).start_local()

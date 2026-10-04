@@ -64,6 +64,24 @@ jobs:
           if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
           if ($p.ExitCode -ne 0) { throw "Распознавание в Rem.exe не прошло (код $($p.ExitCode))" }
 
+      - name: Кэш нейроголоса
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Roaming\Rem\voice
+          key: voice-1-silero-v5
+
+      - name: Нейроголос в собранном Rem.exe
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          # скачивает голос по тем же адресам, что кнопка в настройках (релиз voice-1 и сайт Silero)
+          $p = Start-Process -FilePath dist\Rem\Rem.exe -ArgumentList "--voice-test","--report","voice.txt" -PassThru
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); Write-Host "Rem.exe не ответил за 10 минут" }
+          if (Test-Path voice.txt) { Get-Content voice.txt }
+          $crash = Join-Path $env:APPDATA "Rem\crash.txt"
+          if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
+          if ($p.ExitCode -ne 0) { throw "Нейроголос в Rem.exe не работает (код $($p.ExitCode))" }
+
       - name: Установщик
         shell: pwsh
         run: |
@@ -137,6 +155,32 @@ jobs:
           New-Item -ItemType Directory -Force "$App\_internal\comtypes\gen" | Out-Null
           'x' | Set-Content "$App\_internal\comtypes\gen\_leftover.py"   # как кэш comtypes после работы
           Expect (((& $OllamaExe list) -join ' ') -match 'smollm') "модель скачана в Ollama"
+          Finish
+
+      - name: Обновление поверх работающего Рэм
+        timeout-minutes: 10
+        run: |
+          . .\.github\scripts\checks.ps1
+          # человек выключил автозапуск в настройках — обновление не должно включить его обратно
+          Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Rem -ErrorAction SilentlyContinue
+          $old = Start-Process "$App\Rem.exe" -PassThru
+          Start-Sleep 5
+          Expect (-not $old.HasExited) "Рэм запущен перед обновлением"
+          # те же параметры, что передаёт rem/update.py
+          $p = Start-Process .\RemSetup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/FORCECLOSEAPPLICATIONS','/MERGETASKS=!autostart,!desktopicon,!ollama','/UPDATE=1' -PassThru
+          $p.WaitForExit()
+          Expect ($p.ExitCode -eq 0) "установщик обновления завершился без ошибок (код $($p.ExitCode))"
+          Start-Sleep 5
+          Expect ($old.HasExited) "старый Рэм закрыт"
+          $new = Get-Process -Name Rem -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $old.Id }
+          Expect ($null -ne $new) "новый Рэм запущен после обновления"
+          Expect (Test-Path "$App\Rem.exe") "Rem.exe на месте"
+          Expect ((Get-Content "$env:APPDATA\Rem\config.json" -Raw) -match 'smollm') "настройки сохранились"
+          Expect (Test-Path "$env:APPDATA\Rem\models\fake.onnx") "модели речи сохранились"
+          Expect ($null -eq (RunValue)) "автозапуск не включился сам"
+          Expect (-not (Test-Path "$env:USERPROFILE\Desktop\Рэм.lnk")) "ярлык на рабочем столе не появился"
+          Stop-Process -Name Rem -Force -ErrorAction SilentlyContinue
+          Start-Sleep 2
           Finish
 
       - name: Удаление с сохранением Ollama

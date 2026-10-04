@@ -15,9 +15,16 @@ DEFAULTS: dict = {
     "game_mode": "fast_only",     # при полноэкранной игре: fast_only | cpu | off
     "asr_threads": 3,             # ядра на распознавание речи (из 6)
     "search_engine": "google",    # google | yandex
+    "voice_engine": "windows",    # windows — голос Windows; silero — нейроголос (скачивается отдельно)
     "voice": "",                  # голос Windows; пусто — первый русский
+    "silero_speaker": "xenia",    # xenia | baya | kseniya | aidar | eugene
+    "voice_pitch": 0,             # высота, % от -30 до +30
+    "voice_rate": 100,            # темп, % от 60 до 140
+    "rem_style": False,           # «Рэм слушает» и «Сделано» голосом вместо сигналов
     "speak_replies": True,
-    "mic_device": None,           # None — микрофон по умолчанию
+    "mic_device": None,           # имя микрофона; None — вход Windows по умолчанию
+    "ignore_speakers": True,      # не реагировать на «Рэм» из колонок (фильмы, видео)
+    "auto_update": True,          # проверять и скачивать обновления
     "disabled_skills": [],
     "confirm_overrides": {},
     "custom_skills": [],

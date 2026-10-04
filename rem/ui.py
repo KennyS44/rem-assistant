@@ -288,7 +288,8 @@ class SettingsWindow:
                 loaded = [m for m in cl.loaded() if m.get("name") == self.model.get()]
                 if loaded:
                     on_gpu = loaded[0].get("size_vram", 0) > 0
-                    text = "загружена на видеокарте" if on_gpu else "загружена в память (на процессоре)"
+                    text = ("загружена на видеокарте" if on_gpu else
+                            "работает на процессоре — для GTX 10xx нужен драйвер NVIDIA 570+")
                 else:
                     text = "скачана, сейчас не загружена (видеопамять свободна)"
         except Exception as e:

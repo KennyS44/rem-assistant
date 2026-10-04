@@ -63,6 +63,7 @@ class App:
         self.sounds = Sounds(cfgmod.app_dir() / "sounds")
         self.assistant = Assistant(self.config, self.voice, self.sounds)
         self.assistant.status_cb = lambda s: self.ui.call(self._set_state, s)
+        self.assistant.notify_cb = lambda text: self.ui.call(self.ui.notify, text)
         threading.Thread(target=self._boot, name="boot", daemon=True).start()
         self.ui.root.mainloop()
         return 0

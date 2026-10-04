@@ -42,6 +42,8 @@ class Assistant:
         self.ctx = Context(config, self.apps, self.timers, self.say)
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
+        self.notify_cb: Callable[[str], None] = lambda s: None
+        self._gpu_checked = False
         self.journal = app_dir() / "actions.log"
         self.reload()
 
@@ -117,7 +119,22 @@ class Assistant:
             if mode == "fast_only":
                 return Plan(reply="Во время игры я выполняю только простые команды.", source="game")
             return self.brain.plan(text, cpu_only=True)
-        return self.brain.plan(text)
+        plan = self.brain.plan(text)
+        if not plan.error and not self._gpu_checked:
+            self._gpu_checked = True
+            threading.Thread(target=self._check_gpu, daemon=True).start()
+        return plan
+
+    def _check_gpu(self) -> None:
+        """Один раз: модель на видеокарте? Если нет — чаще всего старый драйвер NVIDIA."""
+        try:
+            loaded = [m for m in self.client.loaded() if m.get("name") == self.config["model"]]
+        except Exception:
+            return
+        if loaded and not loaded[0].get("size_vram"):
+            log.warning("модель работает на процессоре")
+            self.notify_cb("Модель работает на процессоре, а не на видеокарте — ответы будут медленнее. "
+                           "Для GTX 10xx нужен драйвер NVIDIA версии 570 или новее.")
 
     def handle(self, text: str, dry_run: bool = False) -> Plan:
         """Выполнить команду. dry_run — только показать план."""

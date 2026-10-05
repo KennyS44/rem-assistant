@@ -277,11 +277,23 @@ def test_windows_context_goes_to_model():
     assert "WINWORD: «Отчёт.docx — Word» (активное)" in seen[0] and seen[0].endswith("Команда: что у меня открыто")
 
 
-def test_run_command_asks_with_description_and_retells(tmp_path, monkeypatch):
+class Steps(FakeClient):
+    """Первый ответ — вызов; на продолжении (видит результат) — следующий ответ из списка."""
+    def __init__(self, *answers):
+        super().__init__(answers[0])
+        self.answers, self.seen = list(answers), []
+
+    def chat_tools(self, model, system, user, tools, extra=None, **k):
+        self.calls += 1
+        self.seen.append((user, extra or []))
+        return self.answers[min(len(self.seen) - 1, len(self.answers) - 1)]
+
+
+def test_run_command_asks_with_description_and_model_retells(tmp_path, monkeypatch):
     from rem.skills import REGISTRY
-    client = FakeClient({"actions": [{"skill": "run_command", "args": {
-        "command": "Get-PSDrive C", "description": "узнать место на диске C"}}], "reply": ""})
-    client.ask = lambda *a, **k: "На диске C свободно 120 гигабайт."
+    client = Steps({"actions": [{"skill": "run_command", "args": {
+        "command": "Get-PSDrive C", "description": "узнать место на диске C"}}], "reply": ""},
+        {"actions": [], "reply": "На диске C свободно 120 гигабайт."})
     a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
     a.journal = tmp_path / "actions.log"
     asked, notes, said = [], [], []
@@ -293,6 +305,43 @@ def test_run_command_asks_with_description_and_retells(tmp_path, monkeypatch):
     a.handle("сколько места на диске це")
     assert asked == ["Узнать место на диске C"] and notes == ["Команда: Get-PSDrive C"]
     assert said == ["На диске C свободно 120 гигабайт."]
+    tool_msg = client.seen[1][1][-1]
+    assert tool_msg["role"] == "tool" and tool_msg["content"] == "Free 120 GB"
+
+
+def test_multi_step_find_then_open(tmp_path, monkeypatch):
+    from rem.skills import REGISTRY
+    opened = []
+    monkeypatch.setattr(REGISTRY["find_files"], "handler", lambda ctx, **k: r"C:\Docs\Отчёт.docx (изменён 04.10.2026 18:20)")
+    monkeypatch.setattr(REGISTRY["open_file"], "handler", lambda ctx, path: opened.append(path))
+    client = Steps({"actions": [{"skill": "find_files", "args": {"query": "отчёт"}}], "reply": ""},
+                   {"actions": [{"skill": "open_file", "args": {"path": r"C:\Docs\Отчёт.docx"}}], "reply": ""})
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    a.say = lambda t: None
+    a.handle("открой вчерашний отчёт")
+    assert opened == [r"C:\Docs\Отчёт.docx"] and client.calls == 2     # open_file данных не возвращает — конец
+
+
+def test_no_answer_after_no(tmp_path, monkeypatch):
+    client = Steps({"actions": [{"skill": "run_command", "args": {"command": "x", "description": "y"}}], "reply": ""})
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    monkeypatch.setattr(a, "_confirm", lambda q: False)
+    a.say = lambda t: None
+    a.handle("сделай что-нибудь")
+    assert client.calls == 1
+
+
+def test_recent_commands_in_context(tmp_path):
+    client = Steps({"actions": [{"skill": "close_app", "args": {"name": "Chrome"}}], "reply": ""})
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    a.say = lambda t: None
+    a.handle("переключись на хром")                   # быстрый путь — модель не спрашиваем
+    a.handle("закрой его")
+    user = client.seen[0][0]
+    assert "Недавно" in user and "«переключись на хром» → switch_window" in user and "Сейчас:" in user
 
 
 def test_call_written_as_text():

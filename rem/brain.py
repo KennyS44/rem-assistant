@@ -32,9 +32,12 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 class Plan:
     actions: list[tuple[str, dict]] = field(default_factory=list)   # (умение, аргументы)
     reply: str = ""
-    source: str = "llm"           # llm | fast
+    source: str = "llm"           # llm | cloud | fast | game
     seconds: float = 0.0
     error: str = ""
+    model: str = ""               # какая модель ответила — продолжение идёт к ней же
+    user: str = ""                # что ушло модели (команда со справкой)
+    history: list = field(default_factory=list)   # шаги после команды: вызовы и их результаты
 
 
 class OllamaError(RuntimeError):
@@ -177,16 +180,17 @@ class Ollama:
 
     def chat_tools(self, model: str, system: str, user: str, tools: list[dict], *,
                    keep_alive: str = "3m", cpu_only: bool = False, think: bool | None = False,
-                   timeout: float | None = None) -> dict:
-        """Родной вызов функций модели → {"actions": [...], "reply": текст}."""
+                   timeout: float | None = None, extra: list | None = None) -> dict:
+        """Родной вызов функций модели → {"actions": [...], "reply": текст}.
+        extra — продолжение диалога: прошлые вызовы и их результаты (многошаговые задачи)."""
         body = {
             "model": model,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
+                         {"role": "user", "content": user}] + (extra or []),
             "tools": tools,
             "stream": False,
             "keep_alive": keep_alive,
-            "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 160},
+            "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 300},
         }
         if think is not None:
             body["think"] = think
@@ -252,10 +256,15 @@ TOOL_EXAMPLES = """«открой телегу» → open_app(name="Telegram")
 «сделай звук на тридцать» → volume_set(level=30)
 «выключи компьютер» → shutdown_pc()
 «найди рецепт блинов и сделай потише» → web_search(query="рецепт блинов"), volume_down()
+«как по-английски кошка» → без вызова, ответ: «Cat.»
+«сколько минут в сутках» → без вызова, ответ: «1440 минут.»
 «удали все файлы на диске» → без вызова, ответ: «Этого я пока не умею.»"""
 
+FILES_EXAMPLE = """
+«открой вчерашний отчёт» → find_files(query="отчёт"), затем по результату open_file(path=…)"""
 
-SHELL_RULE = """2. Если готовой функции нет, но просьбу можно выполнить командой PowerShell на этом \
+
+SHELL_RULE = """2. Если просят сделать что-то, для чего готовой функции нет, но это можно выполнить командой PowerShell на этом \
 компьютере, — вызови run_command. Если нельзя или это опасно (удалить файлы, отформатировать диск, \
 отключить защиту, купить, написать людям) — ничего не вызывай и коротко скажи, что этого пока не умеешь."""
 
@@ -264,15 +273,18 @@ SHELL_EXAMPLE = """
 description="узнать свободное место на диске C")"""
 
 WINDOWS_RULE = """
-6. Перед командой может быть список открытых окон. По нему отвечай на вопросы об окнах \
-и выбирай окно для switch_window и close_app."""
+6. Перед командой бывает справка: время, открытые окна, что было недавно. По ней понимай \
+«его», «ещё», «нет, другое» и выбирай окно для switch_window и close_app.
+7. Получив результат функции, реши: нужно ещё действие — вызови; всё готово — ответь \
+по сути результата одной-двумя фразами."""
 
 
 def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) -> str:
     have = {s.name for s in skills or []}
     rule2 = SHELL_RULE if "run_command" in have else \
-        "2. Если подходящей функции нет — ничего не вызывай и коротко скажи, что этого пока не умеешь."
-    examples = TOOL_EXAMPLES + (SHELL_EXAMPLE if "run_command" in have else "")
+        "2. Если просят сделать то, для чего функции нет, — ничего не вызывай и коротко скажи, что этого пока не умеешь."
+    examples = TOOL_EXAMPLES + (SHELL_EXAMPLE if "run_command" in have else "") + \
+        (FILES_EXAMPLE if "find_files" in have else "")
     return f"""Ты — {name}, голосовой помощник на компьютере с Windows. Команда распознана из речи, \
 в ней бывают ошибки — угадывай смысл.
 
@@ -280,7 +292,9 @@ def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) 
 1. Если команде соответствует функция — обязательно вызови её. Не пиши, что сделал, без вызова.
 {rule2}
 3. Несколько функций — только если явно просят несколько вещей, не больше трёх.
-4. Текстом отвечай только на вопросы и болтовню, одной короткой фразой по-русски.
+4. На вопросы и болтовню отвечай текстом по-русски, коротко — одной-тремя фразами, без списков \
+и разметки. Можно переводить, считать, объяснять. Нет уверенности в факте — так и скажи и предложи поискать. Время и дату не выдумывай: \
+на «который час» и «какое число» вызывай tell_time и tell_date.
 5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}
 
 Примеры:
@@ -361,7 +375,8 @@ def honest_reply(reply: str, has_actions: bool) -> str:
     Смайлики убираем: голос их не произносит."""
     reply = " ".join(EMOJI.sub("", reply).split())
     low = reply.lower()
-    if not has_actions and any(c in low for c in CLAIMS):
+    # только короткие «Компьютер выключен.» — длинный ответ на вопрос может упомянуть «открыт» к месту
+    if not has_actions and len(low.split()) <= 6 and any(c in low for c in CLAIMS):
         return ""
     return reply
 
@@ -451,11 +466,11 @@ class Brain:
         out = [(cloud, True)] if cloud else []
         return out + ([(self.config["model"], False)] if local else [])
 
-    def _call(self, model: str, cloud: bool, user: str, cpu_only: bool) -> dict:
+    def _call(self, model: str, cloud: bool, user: str, cpu_only: bool, extra: list | None = None) -> dict:
         kw = dict(keep_alive=f"{int(self.config.get('keep_alive_min', 3))}m", cpu_only=cpu_only and not cloud)
         if self.mode == "tools":
             return self.client.chat_tools(model, self.system, user, self.tools,
-                                          timeout=CLOUD_TIMEOUT if cloud else None, **kw)
+                                          timeout=CLOUD_TIMEOUT if cloud else None, extra=extra, **kw)
         return self.client.chat(model, self.system, user, self.schema, **kw)
 
     def plan(self, text: str, cpu_only: bool = False, context: str = "", local: bool = True) -> Plan:
@@ -466,7 +481,7 @@ class Brain:
         for model, cloud in self.models(local):
             try:
                 plan = validate(self._call(model, cloud, user, cpu_only), self.skills)
-                plan.source = "cloud" if cloud else "llm"
+                plan.source, plan.model, plan.user = "cloud" if cloud else "llm", model, user
                 break
             except (OllamaError, json.JSONDecodeError, KeyError) as e:
                 plan = Plan(error=str(e))
@@ -475,6 +490,27 @@ class Brain:
                     log.warning("облачная модель не ответила: %s", e)
         plan.seconds = time.perf_counter() - t
         return plan
+
+    def follow(self, plan: Plan, done: list[tuple[str, dict, str]], cpu_only: bool = False) -> Plan | None:
+        """Следующий шаг многошаговой задачи: модель видит результаты вызовов (done —
+        умение, аргументы, вывод) и вызывает ещё что-то или отвечает. None — режим schema
+        продолжений не умеет."""
+        if self.mode != "tools" or not plan.model:
+            return None
+        history = plan.history + [
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"function": {"name": n, "arguments": a}} for n, a, _ in done]},
+            # окно модели — 4096 токенов (больше не влезет в 4 ГБ видеопамяти вместе с моделью)
+            *({"role": "tool", "tool_name": n, "content": (out or "готово")[:1500]} for n, _, out in done)]
+        cloud = plan.source == "cloud"
+        t = time.perf_counter()
+        try:
+            nxt = validate(self._call(plan.model, cloud, plan.user, cpu_only, history), self.skills)
+        except (OllamaError, json.JSONDecodeError, KeyError) as e:
+            nxt = Plan(error=str(e))
+        nxt.source, nxt.model, nxt.user, nxt.history = plan.source, plan.model, plan.user, history
+        nxt.seconds = time.perf_counter() - t
+        return nxt
 
     def retell(self, text: str, output: str) -> str:
         """Вывод команды → короткая фраза для озвучки. Не вышло — пустая строка."""

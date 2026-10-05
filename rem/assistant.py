@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
@@ -15,9 +16,13 @@ from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
 from .skills.apps import AppIndex
+from .skills.system import MONTHS, WEEKDAYS
 from .timers import Timers
 
 log = logging.getLogger("rem.assistant")
+
+MAX_STEPS = 4         # многошаговая задача: не больше 4 обращений к модели
+RECENT_S = 180        # «закрой его» понимаем по командам за последние 3 минуты
 
 
 @dataclass
@@ -45,6 +50,7 @@ class Assistant:
         self.notify_cb: Callable[[str], None] = lambda s: None
         self._gpu_checked = False
         self._cloud_warned = False
+        self.recent: deque = deque(maxlen=4)       # (когда, команда, результаты, ответ) — память разговора
         self.journal = app_dir() / "actions.log"
         self.reload()
 
@@ -120,11 +126,7 @@ class Assistant:
         fast = self.fast.match(text)
         if fast:
             return fast
-        try:
-            context = windows_context(winapi.open_windows())
-        except Exception as e:
-            log.debug("список окон: %s", e)
-            context = ""
+        context = self.context()
         if self.game_mode:
             # облако видеокарту не трогает — во время игры им можно пользоваться как обычно
             mode = self.config.get("game_mode", "fast_only")
@@ -139,6 +141,24 @@ class Assistant:
             self._gpu_checked = True
             threading.Thread(target=self._check_gpu, daemon=True).start()
         return plan
+
+    def context(self) -> str:
+        """Справка для модели: время, открытые окна, последние команды (за RECENT_S секунд)."""
+        now = dt.datetime.now()
+        parts = [f"Сейчас: {WEEKDAYS[now.weekday()]}, {now.day} {MONTHS[now.month - 1]} {now.year}, {now:%H:%M}."]
+        try:
+            parts.append(windows_context(winapi.open_windows()))
+        except Exception as e:
+            log.debug("список окон: %s", e)
+        fresh = [r for r in self.recent if time.monotonic() - r[0] < RECENT_S]
+        if fresh:
+            lines = []
+            for _, said, results, spoken in fresh:
+                acts = ", ".join(f"{n}({', '.join(f'{k}={v!r}' for k, v in a.items())}) — {st}"
+                                 for n, a, st in results)
+                lines.append(f"- «{said}» → {acts or 'без действий'}" + (f"; ответ: «{spoken[:150]}»" if spoken else ""))
+            parts.append("Недавно (сначала старое):\n" + "\n".join(lines))
+        return "\n\n".join(p for p in parts if p)
 
     def _warn_cloud(self, plan: Plan) -> None:
         """Один раз за запуск: облако не ответило — говорим почему (дальше молча работаем локально)."""
@@ -166,21 +186,59 @@ class Assistant:
                            "Для GTX 10xx нужен драйвер NVIDIA версии 570 или новее.")
 
     def handle(self, text: str, dry_run: bool = False) -> Plan:
-        """Выполнить команду. dry_run — только показать план."""
+        """Выполнить команду. dry_run — только показать план.
+        Если умение вернуло данные (поиск файлов, вывод команды), модель видит их и решает,
+        что дальше: ещё действие или ответ. Не больше MAX_STEPS шагов."""
         self.status_cb("thinking")
         t0 = time.perf_counter()
-        plan = self.plan(text)
-        replies = []
+        plan = first = self.plan(text)
+        replies, results = [], []
         if plan.error:
             log.warning("модель: %s", plan.error)
             replies.append("Не могу связаться с моделью. Проверь, запущена ли Ollama."
                            if "недоступна" in plan.error else "Не удалось понять команду.")
         elif not plan.actions and not plan.reply:
             replies.append(self.phrase("Команда не распознана.", "Простите, Рэм не расслышала."))
-        if plan.reply:
-            replies.append(plan.reply)
 
-        results = []
+        for _ in range(MAX_STEPS):
+            if plan.reply:
+                replies.append(plan.reply)
+            done, more = self._run(plan, dry_run, replies, results)
+            if not more:
+                break
+            nxt = self.brain.follow(plan, done, cpu_only=self.game_mode)
+            if nxt is None or nxt.error:              # продолжение не вышло — хотя бы пересказ
+                if nxt is not None:
+                    log.warning("следующий шаг: %s", nxt.error)
+                for name, _, out in done:
+                    if self.by_name[name].retell:
+                        replies.append(self.brain.retell(text, out) or self.phrase("Готово.", "Рэм всё сделала."))
+                break
+            plan = nxt
+            if not plan.actions and not plan.reply:
+                replies.append(self.phrase("Готово.", "Рэм всё сделала."))
+
+        spoken = " ".join(dict.fromkeys(replies))
+        self._write_journal(text, first, results, time.perf_counter() - t0, spoken)
+        if not dry_run:
+            self.recent.append((time.monotonic(), text, results, spoken))
+            if spoken:
+                self.say(spoken)
+            elif results and self.config.get("rem_style") and self.voice:
+                self.say("Рэм всё сделала.")
+            elif results:
+                self._sound("done")
+            else:
+                self._sound("error")
+            if self.voice:
+                self.voice.wait()
+        self.status_cb("game" if self.game_mode else "idle")
+        return first
+
+    def _run(self, plan: Plan, dry_run: bool, replies: list, results: list) -> tuple[list, bool]:
+        """Выполнить действия плана. → (что сделано для модели: умение, аргументы, вывод;
+        нужен ли следующий шаг — умение вернуло данные)."""
+        done, more = [], False
         for name, args in plan.actions:
             s = self.by_name.get(name)
             if not s:
@@ -194,35 +252,26 @@ class Assistant:
             if s.confirm and not self._confirm(question[:1].upper() + question[1:]):
                 replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))
-                continue
+                return done, False                     # «нет» — дальше не продолжаем
             try:
                 out = s.handler(self.ctx, **args)
-                if s.retell:
-                    out = self.brain.retell(text, out or "") or self.phrase("Готово.", "Рэм всё сделала.")
-                if out:
+                if out and not s.retell:
                     replies.append(out)
                 results.append((name, args, "ок"))
+                done.append((name, args, out or ""))
+                more = more or s.retell
             except winapi.NotOnWindows:
                 results.append((name, args, "только в Windows"))
             except Exception as e:
                 log.exception("умение %s упало", name)
-                replies.append(self.phrase("Не получилось: ", "Простите, у Рэм не получилось: ") + f"{s.title.lower()}.")
                 results.append((name, args, f"ошибка: {e}"))
-
-        self._write_journal(text, plan, results, time.perf_counter() - t0)
-        if not dry_run:
-            if replies:
-                self.say(" ".join(dict.fromkeys(replies)))
-            elif plan.actions and self.config.get("rem_style") and self.voice:
-                self.say("Рэм всё сделала.")
-            elif plan.actions:
-                self._sound("done")
-            else:
-                self._sound("error")
-            if self.voice:
-                self.voice.wait()
-        self.status_cb("game" if self.game_mode else "idle")
-        return plan
+                if s.retell:                           # модель увидит ошибку и попробует иначе или объяснит
+                    done.append((name, args, f"ошибка: {e}"))
+                    more = True
+                else:
+                    replies.append(self.phrase("Не получилось: ", "Простите, у Рэм не получилось: ")
+                                   + f"{s.title.lower()}.")
+        return done, more
 
     def _confirm(self, title: str) -> bool:
         if not self.listener or not self.voice:
@@ -232,9 +281,9 @@ class Assistant:
         self.listener.mic.flush()
         return self.listener.hear_yes_no()
 
-    def _write_journal(self, text: str, plan: Plan, results: list, seconds: float) -> None:
+    def _write_journal(self, text: str, plan: Plan, results: list, seconds: float, spoken: str = "") -> None:
         rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "text": text,
-               "source": plan.source, "actions": results, "reply": plan.reply,
+               "source": plan.source, "actions": results, "reply": spoken or plan.reply,
                "model_s": round(plan.seconds, 2), "total_s": round(seconds, 2)}
         if plan.error:
             rec["error"] = plan.error

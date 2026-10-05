@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Подбор голоса Рем</title>
+<title>Голос Рем</title>
 <meta name="theme-color" content="#0e1014">
 <link rel="icon" href="icon.png" type="image/png">
 <link rel="stylesheet" href="style.css">
@@ -11,8 +11,8 @@
 <body>
 <header class="hero">
   <div class="wrap">
-    <h1>Подбор голоса Рем</h1>
-    <p class="lead">Голос создан нейросетью только по словесному описанию — записи из аниме не использовались. Каждый круг уточняет выбранный голос.</p>
+    <h1>Голос Рем</h1>
+    <p class="lead">Голос создан нейросетью только по словесному описанию — записи из аниме не использовались. Частые фразы Рэм озвучены им заранее.</p>
     <p class="meta"><a href="./">← На главную</a></p>
   </div>
 </header>
@@ -20,37 +20,33 @@
   <section>
     <h2>Выбранный голос</h2>
     <div class="voices">
-      <div class="voice"><h3>№ 2.5</h3><p>Ближе всего к Рем. Слова звучат правильно, но смысловое ударение иногда падает не туда — например, на число вместо «закончился».</p><audio controls preload="none" src="voices/lab3/chosen.mp3"></audio></div>
+      <div class="voice"><h3>№ 2.5</h3><p>Образец, по которому подбирались все фразы.</p><audio controls preload="none" src="voices/lab3/chosen.mp3"></audio></div>
     </div>
   </section>
   <section>
-    <h2>Фраза про таймер: порядок слов</h2>
-    <p>Главное ударение в русском естественно падает на конец предложения. Здесь одна и та же фраза сказана по-разному.</p>
+    <h2>Готовые фразы</h2>
+    <p>Всего озвучено 38 фраз. Для каждой сделано 4 варианта, и автоматически оставлен тот, где текст произнесён верно, а высота и тембр ближе всего к образцу 2.5. Ниже — примеры.</p>
     <div class="voices">
-      <div class="voice"><h3>№ 3.1</h3><p>А. «Таймер на сорок пять минут закончился» — как было.</p><audio controls preload="none" src="voices/lab3/01.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.2</h3><p>Б. «Сорок пять минут прошли — таймер закончился».</p><audio controls preload="none" src="voices/lab3/02.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.3</h3><p>В. «Время вышло! Таймер на сорок пять минут закончился».</p><audio controls preload="none" src="voices/lab3/03.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.4</h3><p>Г. «Таймер закончился. Прошло сорок пять минут».</p><audio controls preload="none" src="voices/lab3/04.mp3"></audio></div>
+      <div class="voice"><h3>«Рэм слушает.»</h3><audio controls preload="none" src="voices/phrases/01.mp3"></audio></div>
+      <div class="voice"><h3>«Рэм всё сделала.»</h3><audio controls preload="none" src="voices/phrases/02.mp3"></audio></div>
+      <div class="voice"><h3>«Простите, Рэм не расслышала.»</h3><audio controls preload="none" src="voices/phrases/03.mp3"></audio></div>
+      <div class="voice"><h3>«Хорошо, Рэм не будет.»</h3><audio controls preload="none" src="voices/phrases/04.mp3"></audio></div>
+      <div class="voice"><h3>«На сколько поставить таймер?»</h3><audio controls preload="none" src="voices/phrases/05.mp3"></audio></div>
+      <div class="voice"><h3>«Таймер на 5 минут.»</h3><audio controls preload="none" src="voices/phrases/06.mp3"></audio></div>
+      <div class="voice"><h3>«5 минут прошли — таймер закончился.»</h3><audio controls preload="none" src="voices/phrases/07.mp3"></audio></div>
+      <div class="voice"><h3>«1 минута прошла — таймер закончился.»</h3><audio controls preload="none" src="voices/phrases/08.mp3"></audio></div>
+      <div class="voice"><h3>«1 час прошёл — таймер закончился.»</h3><audio controls preload="none" src="voices/phrases/09.mp3"></audio></div>
+      <div class="voice"><h3>«Выключить компьютер? Скажите да или нет.»</h3><audio controls preload="none" src="voices/phrases/10.mp3"></audio></div>
     </div>
   </section>
   <section>
-    <h2>Подсказка в описании голоса</h2>
-    <p>К описанию добавлено: «главное ударение — на ключевом слове в конце, числа произносить ровно, без выделения». Слева без подсказки, справа с ней — сравнивай парами.</p>
+    <h2>Проверь на слух</h2>
+    <p>В этих трёх фразах распознавание речи услышало что-то странное — возможно, число произнесено нечётко или в конце лишний звук.</p>
     <div class="voices">
-      <div class="voice"><h3>№ 3.1</h3><p>А без подсказки</p><audio controls preload="none" src="voices/lab3/01.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.5</h3><p>А с подсказкой</p><audio controls preload="none" src="voices/lab3/05.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.4</h3><p>Г без подсказки</p><audio controls preload="none" src="voices/lab3/04.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.6</h3><p>Г с подсказкой</p><audio controls preload="none" src="voices/lab3/06.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.7</h3><p>«Рэм слушает» без подсказки</p><audio controls preload="none" src="voices/lab3/07.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.8</h3><p>«Рэм слушает» с подсказкой</p><audio controls preload="none" src="voices/lab3/08.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.9</h3><p>«Простите, Рэм не расслышала» без подсказки</p><audio controls preload="none" src="voices/lab3/09.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.10</h3><p>То же с подсказкой</p><audio controls preload="none" src="voices/lab3/10.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.11</h3><p>«Выключить компьютер? Скажите «да» или «нет»» без подсказки</p><audio controls preload="none" src="voices/lab3/11.mp3"></audio></div>
-      <div class="voice"><h3>№ 3.12</h3><p>То же с подсказкой</p><audio controls preload="none" src="voices/lab3/12.mp3"></audio></div>
+      <div class="voice"><h3>«10 минут прошли — таймер закончился.»</h3><audio controls preload="none" src="voices/phrases/11.mp3"></audio></div>
+      <div class="voice"><h3>«45 минут прошли — таймер закончился.»</h3><audio controls preload="none" src="voices/phrases/12.mp3"></audio></div>
+      <div class="voice"><h3>«Таймер на 40 минут.»</h3><audio controls preload="none" src="voices/phrases/13.mp3"></audio></div>
     </div>
-  </section>
-  <section>
-    <p class="hint">Напиши, какой вариант фразы про таймер звучит правильно и помогает ли подсказка. Все образцы — голос 2.5.</p>
   </section>
 </main>
 <footer><div class="wrap">Модель: Qwen3-TTS, лицензия Apache 2.0.</div></footer>

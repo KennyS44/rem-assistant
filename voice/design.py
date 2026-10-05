@@ -5,6 +5,7 @@
 (.github/workflows/voice-design.yml), результат — архив с WAV.
 
     python voice/design.py samples out/            — по 2 образца каждого варианта описания
+    python voice/design.py samples out/ --engine vox   — то же моделью VoxCPM2 (Apache 2.0)
     python voice/design.py pack out/ --variant b --seed 2
         — образец выбранного голоса → клон этого образца (модель Base) → все фразы
           из rem.voiceclips.phrases() в out/clips/<ключ>.wav
@@ -18,7 +19,6 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
-from qwen_tts import Qwen3TTSModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rem import voiceclips  # noqa: E402
@@ -32,6 +32,14 @@ VARIANTS = {
          + " Serene, reserved, almost whispering at phrase ends.",
     "c": BASE + " Slightly brighter and sweeter, with a faint smile in the voice.",
     "d": BASE.replace("high clear voice", "very high, light, youthful voice") + " Cute and earnest.",
+    "e": "Teenage girl with a soft, mid-high, slightly husky voice, quiet and composed, devoted and "
+         "affectionate, polite formal speech, Japanese anime voice acting, gentle smile, calm pace.",
+    "f": "Gentle young maid, sweet soft voice with a warm low-mid register for a girl, very polite and humble, "
+         "tender and caring, subtle breathy tone, slow and deliberate, Japanese anime heroine dubbed in Russian.",
+    "g": "Young woman, light airy voice, soft-spoken and serene, faint melancholy, sincere and loyal, "
+         "careful polite intonation rising softly at phrase ends, anime style.",
+    "h": "Cheerful yet modest girl, clear bright high voice with a soft attack, eager to help, "
+         "kind and loving, smooth gentle melody, Japanese anime idol voice acting.",
 }
 NUMBERS = {"1 минуту": "одну минуту", "2 минуты": "две минуты", "3 минуты": "три минуты",
            "1 час": "один час", "2 часа": "два часа"}
@@ -55,7 +63,8 @@ def trim(wav: np.ndarray, sr: int) -> np.ndarray:
     return wav[max(0, loud[0] - pad): loud[-1] + pad]
 
 
-def load(name: str) -> Qwen3TTSModel:
+def load(name: str):
+    from qwen_tts import Qwen3TTSModel
     t = time.time()
     m = Qwen3TTSModel.from_pretrained(f"Qwen/{name}", device_map="cpu", dtype=torch.float32)
     print(f"{name}: загружена за {time.time() - t:.0f} с", flush=True)
@@ -70,21 +79,40 @@ def design(model, variant: str, seed: int):
     return trim(wavs[0], sr), sr
 
 
+def vox_samples(out: Path) -> None:
+    """VoxCPM2: описание в скобках перед текстом, на выходе 48 кГц."""
+    from voxcpm import VoxCPM
+    t = time.time()
+    m = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
+    print(f"VoxCPM2: загружена за {time.time() - t:.0f} с", flush=True)
+    for v, desc in VARIANTS.items():
+        for seed in (1, 2):
+            t = time.time()
+            wav = m.generate(text=f"({desc}){REF_TEXT}", cfg_value=2.0, inference_timesteps=10, seed=seed)
+            sr = m.tts_model.sample_rate
+            sf.write(out / f"vox-{v}{seed}.wav", trim(np.asarray(wav), sr), sr, subtype="PCM_16")
+            print(f"vox-{v}{seed}: {len(wav) / sr:.1f} с звука за {time.time() - t:.0f} с", flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["samples", "pack"])
     ap.add_argument("out", type=Path)
     ap.add_argument("--variant", default="a", choices=list(VARIANTS))
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--engine", default="qwen", choices=["qwen", "vox"])
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(4)
+    if a.engine == "vox":
+        vox_samples(a.out)
+        return 0
     dm = load("Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     if a.mode == "samples":
         for v in VARIANTS:
             for seed in (1, 2):
                 wav, sr = design(dm, v, seed)
-                sf.write(a.out / f"design-{v}{seed}.wav", wav, sr)
+                sf.write(a.out / f"qwen-{v}{seed}.wav", wav, sr, subtype="PCM_16")
         return 0
 
     ref, sr = design(dm, a.variant, a.seed)

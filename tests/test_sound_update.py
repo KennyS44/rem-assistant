@@ -185,3 +185,22 @@ def test_cleanup_keeps_only_newer(tmp_path, monkeypatch):
         (tmp_path / n).write_bytes(b"x")
     update.cleanup()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["RemSetup-0.3.0.exe"]
+
+
+# ——— готовые фразы голосом Рем ———
+
+def test_voiceclips_cover_whole_reply_only(tmp_path, monkeypatch):
+    from rem import voiceclips
+    monkeypatch.setattr(voiceclips, "CLIPS", tmp_path)
+    for t in ("Рэм слушает.", "Хорошо, Рэм не будет."):
+        (tmp_path / f"{voiceclips.key(t)}.wav").write_bytes(b"RIFF")
+    assert len(voiceclips.clips_for("Рэм слушает. Хорошо, Рэм не будет.")) == 2
+    assert voiceclips.clips_for("рэм  слушает.")                     # регистр и пробелы не важны
+    assert voiceclips.clips_for("Рэм слушает. Сейчас пять часов.") is None   # смешивать голоса не будем
+
+
+def test_voiceclips_phrases_match_what_rem_says():
+    from rem import voiceclips
+    p = voiceclips.phrases()
+    assert "Рэм всё сделала." in p and "Таймер на 5 минут." in p and "5 минут прошли — таймер закончился." in p
+    assert len(p) == len(set(map(voiceclips.key, p)))

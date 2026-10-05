@@ -14,7 +14,7 @@ from rem.skills.apps import AppIndex
 from rem.skills.custom import build_custom, parse_keys
 from rem.skills.system import tell_date, tell_time
 from rem.skills.web import site_url
-from rem.text import duration_ru, plural, translit
+from rem.text import duration_ru, elapsed_ru, plural, translit
 from rem.timers import Timers
 
 SKILLS = active_skills(cfgmod.DEFAULTS)
@@ -145,6 +145,10 @@ def test_russian_text():
     assert plural(3, "минута", "минуты", "минут") == "минуты"
     assert plural(11, "минута", "минуты", "минут") == "минут"
     assert duration_ru(90) == "1 минуту 30 секунд"
+    assert elapsed_ru(300) == "5 минут прошли"
+    assert elapsed_ru(60) == "1 минута прошла" and elapsed_ru(21 * 60) == "21 минута прошла"
+    assert elapsed_ru(3600) == "1 час прошёл" and elapsed_ru(5400) == "1 час 30 минут прошли"
+    assert elapsed_ru(45) == "45 секунд прошли" and elapsed_ru(11 * 60) == "11 минут прошли"
     assert translit("дискорд") == "diskord"
     assert tell_time(None, dt.datetime(2026, 1, 1, 14, 5)) == "14 часов 5 минут."
     assert tell_time(None, dt.datetime(2026, 1, 1, 21, 0)) == "Ровно 21 час."

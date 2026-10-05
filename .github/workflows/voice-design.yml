@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y sox libsox-fmt-all > /dev/null
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install soundfile numpy
-          if [ "${{ inputs.engine }}" = vox ]; then pip install voxcpm; else pip install qwen-tts ruaccent; fi
+          if [ "${{ inputs.engine }}" = vox ]; then pip install voxcpm; else pip install qwen-tts ruaccent onnx-asr onnxruntime; fi
       - name: Озвучка
         run: python voice/design.py ${{ inputs.mode }} out --variant ${{ inputs.variant }} --seed ${{ inputs.seed }} --engine ${{ inputs.engine }}
       - uses: actions/upload-artifact@v4

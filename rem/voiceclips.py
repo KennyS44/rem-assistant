@@ -18,12 +18,12 @@ TIMER_MINUTES = (1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 45, 60, 90, 120)
 def phrases() -> list[str]:
     """Всё, что озвучивается заранее. Меняешь список — пересобери клипы (voice/design.py pack)."""
     from .skills import REGISTRY
-    from .text import duration_ru
+    from .text import duration_ru, elapsed_ru
     out = ["Рэм слушает.", "Рэм всё сделала.", "Простите, Рэм не расслышала.", "Хорошо, Рэм не будет.",
            "Таймеры отменены.", "Таймеров нет.", "На сколько поставить таймер?"]
     for m in TIMER_MINUTES:
         label = duration_ru(m * 60)
-        out += [f"Таймер на {label}.", f"Таймер на {label} закончился."]
+        out += [f"Таймер на {label}.", f"{elapsed_ru(m * 60)} — таймер закончился."]
     for s in sorted(REGISTRY.values(), key=lambda s: s.name):
         if s.confirm:
             out.append(f"{s.title}? Скажите «да» или «нет».")

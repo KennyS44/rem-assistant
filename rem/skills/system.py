@@ -6,7 +6,7 @@ import os
 import re
 
 from .. import winapi
-from ..text import duration_ru, plural
+from ..text import duration_ru, elapsed_ru, plural
 from .base import Param, skill
 
 FOLDERS = ["desktop", "downloads", "documents", "pictures", "music", "videos"]
@@ -122,7 +122,7 @@ def set_timer(ctx, minutes: int = 0, seconds: int = 0):
     if total <= 0:
         return "На сколько поставить таймер?"
     label = duration_ru(total)
-    ctx.timers.start(total, f"Таймер на {label} закончился.")
+    ctx.timers.start(total, f"{elapsed_ru(total)} — таймер закончился.")
     return f"Таймер на {label}."
 
 

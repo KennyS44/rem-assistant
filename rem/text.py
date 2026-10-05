@@ -39,3 +39,20 @@ def duration_ru(seconds: int) -> str:
     if s or not parts:
         parts.append(f"{s} {plural(s, 'секунду', 'секунды', 'секунд')}")
     return " ".join(parts)
+
+
+def elapsed_ru(seconds: int) -> str:
+    """«5 минут прошли», «1 минута прошла», «1 час прошёл» — для фразы о конце таймера.
+    Число в начале, глагол в конце: так смысловое ударение падает на «прошли», а не на число."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    parts = []
+    if h:
+        parts.append((h, plural(h, "час", "часа", "часов"), "прошёл"))
+    if m:
+        parts.append((m, plural(m, "минута", "минуты", "минут"), "прошла"))
+    if s or not parts:
+        parts.append((s, plural(s, "секунда", "секунды", "секунд"), "прошла"))
+    n, _, one_verb = parts[-1]
+    verb = one_verb if n % 10 == 1 and n % 100 != 11 else "прошли"
+    return " ".join(f"{n} {w}" for n, w, _ in parts) + " " + verb

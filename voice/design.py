@@ -10,9 +10,9 @@
           синтетического образца с разной разметкой ударений и короткими паузами
     python voice/design.py round3 out/             — голос 2.5 (FLUENT, seed 1): смысловое ударение —
           порядок слов и подсказка в описании; сходство голоса с voice/ref/rem25.wav
-    python voice/design.py pack out/ --variant b --seed 2
-        — образец выбранного голоса → клон этого образца (модель Base) → все фразы
-          из rem.voiceclips.phrases() в out/clips/<ключ>.wav
+    python voice/design.py pack out/               — все фразы rem.voiceclips.phrases() голосом 2.5
+          в out/clips/<ключ>.wav: по CANDIDATES вариантов на фразу, остаётся тот, где текст
+          распознан верно, а высота и тембр ближе всего к voice/ref/rem25.wav
 """
 import argparse
 import re
@@ -45,7 +45,7 @@ VARIANTS = {
     "h": "Cheerful yet modest girl, clear bright high voice with a soft attack, eager to help, "
          "kind and loving, smooth gentle melody, Japanese anime idol voice acting.",
 }
-NUMBERS = {"1 минуту": "одну минуту", "2 минуты": "две минуты", "3 минуты": "три минуты",
+NUMBERS = {"1 минуту": "одну минуту", "1 минута": "одна минута", "2 минуты": "две минуты", "3 минуты": "три минуты",
            "1 час": "один час", "2 часа": "два часа"}
 WORDS = {"5": "пять", "10": "десять", "15": "пятнадцать", "20": "двадцать", "25": "двадцать пять",
          "30": "тридцать", "40": "сорок", "45": "сорок пять"}
@@ -170,6 +170,70 @@ def round3(out: Path) -> None:
         print(f"сходство с 2.5: {float(emb(w, sr) @ ref):.3f}  {name}", flush=True)
 
 
+CANDIDATES = 4
+
+
+def f0_median(w: np.ndarray, sr: int) -> float:
+    out, n = [], int(sr * 0.05)
+    for i in range(0, len(w) - n, n // 5):
+        x = w[i:i + n] - w[i:i + n].mean()
+        if np.sqrt((x ** 2).mean()) < 0.02:
+            continue
+        c = np.correlate(x, x, "full")[n - 1:]
+        lo, hi = sr // 600, sr // 120
+        k = lo + np.argmax(c[lo:hi])
+        if c[k] > 0.6 * c[0]:
+            out.append(sr / k)
+    return float(np.median(out)) if out else 0.0
+
+
+def loudness(w: np.ndarray) -> np.ndarray:
+    """Одинаковая громкость у всех фраз: RMS −20 дБ, пики не выше 0,95."""
+    w = w * (0.1 / max(1e-6, np.sqrt((w ** 2).mean())))
+    return w * min(1.0, 0.95 / max(1e-6, np.abs(w).max()))
+
+
+def pack(dm, out: Path) -> None:
+    """Голос 2.5 (описание FLUENT) для каждой фразы; лучший из CANDIDATES вариантов."""
+    import json
+    import onnx_asr
+    from difflib import SequenceMatcher
+    from rem.text import norm
+    asr = onnx_asr.load_model("gigaam-v3-e2e-ctc", quantization="int8")
+    em = load("Qwen3-TTS-12Hz-0.6B-Base")
+
+    def emb(w, sr):
+        v = em.create_voice_clone_prompt(ref_audio=(w, sr), x_vector_only_mode=True)[0].ref_spk_embedding
+        v = v.float().flatten()
+        return v / v.norm()
+
+    rw, rsr = sf.read(str(Path(__file__).parent / "ref" / "rem25.wav"))
+    ref, ref_f0 = emb(rw, rsr), f0_median(rw, rsr)
+    (out / "clips").mkdir(parents=True, exist_ok=True)
+    report = []
+    for text in voiceclips.phrases():
+        best = None
+        for seed in range(1, CANDIDATES + 1):
+            torch.manual_seed(seed)
+            wavs, sr = dm.generate_voice_design(text=spoken(text), language="Russian", instruct=FLUENT)
+            w = short_pauses(trim(np.asarray(wavs[0]), sr), sr)
+            w16 = np.interp(np.arange(0, len(w), sr / 16000), np.arange(len(w)), w).astype(np.float32)
+            heard = asr.recognize(w16, sample_rate=16000)
+            ok = SequenceMatcher(None, norm(heard), norm(text)).ratio()
+            f0, sim = f0_median(w, sr), float(emb(w, sr) @ ref)
+            off = abs(12 * np.log2(f0 / ref_f0)) if f0 else 12.0
+            score = sim * 100 - off - (50 if ok < 0.85 else 0)          # полутон ≈ 0,01 сходства
+            print(f"  {seed}: текст {ok:.2f} высота {f0:.0f} Гц ({off:.1f} пт) сходство {sim:.3f} → {score:.1f}",
+                  flush=True)
+            if best is None or score > best[0]:
+                best = (score, seed, w, sr, round(ok, 2), round(f0), round(sim, 3), heard)
+        score, seed, w, sr, ok, f0, sim, heard = best
+        sf.write(out / "clips" / f"{voiceclips.key(text)}.wav", loudness(w), sr, subtype="PCM_16")
+        report.append({"text": text, "seed": seed, "text_ok": ok, "f0": f0, "sim": sim, "heard": heard})
+        print(f"{text} → вариант {seed}", flush=True)
+    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 def trim(wav: np.ndarray, sr: int) -> np.ndarray:
     """Тишина по краям — 50 мс."""
     loud = np.flatnonzero(np.abs(wav) > 0.01)
@@ -238,18 +302,7 @@ def main() -> int:
                 sf.write(a.out / f"qwen-{v}{seed}.wav", wav, sr, subtype="PCM_16")
         return 0
 
-    ref, sr = design(dm, a.variant, a.seed)
-    sf.write(a.out / "reference.wav", ref, sr)
-    del dm
-    cm = load("Qwen3-TTS-12Hz-0.6B-Base")
-    prompt = cm.create_voice_clone_prompt(ref_audio=(ref, sr), ref_text=REF_TEXT)
-    (a.out / "clips").mkdir(exist_ok=True)
-    torch.manual_seed(a.seed)
-    for text in voiceclips.phrases():
-        t = time.time()
-        wavs, sr = cm.generate_voice_clone(text=spoken(text), language="Russian", voice_clone_prompt=prompt)
-        sf.write(a.out / "clips" / f"{voiceclips.key(text)}.wav", trim(wavs[0], sr), sr, subtype="PCM_16")
-        print(f"{time.time() - t:4.0f} с  {text}", flush=True)
+    pack(dm, a.out)
     return 0
 
 

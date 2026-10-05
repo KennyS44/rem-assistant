@@ -8,6 +8,8 @@
     python voice/design.py samples out/ --engine vox   — то же моделью VoxCPM2 (Apache 2.0)
     python voice/design.py round2 out/             — голос № 10 (voice/ref/rem10.wav): клон этого
           синтетического образца с разной разметкой ударений и короткими паузами
+    python voice/design.py round3 out/             — голос 2.5 (FLUENT, seed 1): смысловое ударение —
+          порядок слов и подсказка в описании; сходство голоса с voice/ref/rem25.wav
     python voice/design.py pack out/ --variant b --seed 2
         — образец выбранного голоса → клон этого образца (модель Base) → все фразы
           из rem.voiceclips.phrases() в out/clips/<ключ>.wav
@@ -124,6 +126,50 @@ def round2(out: Path) -> None:
             save(f"r-fluent{seed}-{mode}", wavs[0], sr)
 
 
+TIMER_WORDINGS = {
+    "A": "Таймер на сорок пять минут закончился.",
+    "B": "Сорок пять минут прошли — таймер закончился.",
+    "C": "Время вышло! Таймер на сорок пять минут закончился.",
+    "D": "Таймер закончился. Прошло сорок пять минут.",
+}
+STRESS_HINT = (" Main sentence stress falls on the key word at the end of each sentence; "
+               "numbers and durations are spoken lightly and evenly, without emphasis.")
+OTHER = ["Рэм слушает.", "Простите, Рэм не расслышала.", "Выключить компьютер? Скажите «да» или «нет»."]
+
+
+def round3(out: Path) -> None:
+    dm = load("Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+    made = {}
+
+    def gen(name, text, instruct):
+        torch.manual_seed(1)                                # как у образца 2.5
+        wavs, sr = dm.generate_voice_design(text=text, language="Russian", instruct=instruct)
+        w = short_pauses(trim(np.asarray(wavs[0]), sr), sr)
+        sf.write(out / f"{name}.wav", w, sr, subtype="PCM_16")
+        made[name] = (w, sr)
+        print(name, text, flush=True)
+
+    for k, t in TIMER_WORDINGS.items():
+        gen(f"r3-{k}", t, FLUENT)
+    for k in ("A", "D"):
+        gen(f"r3-{k}-hint", TIMER_WORDINGS[k], FLUENT + STRESS_HINT)
+    for i, t in enumerate(OTHER, 1):
+        gen(f"r3-x{i}", t, FLUENT)
+        gen(f"r3-x{i}-hint", t, FLUENT + STRESS_HINT)
+    del dm
+    # «отпечаток голоса» (x-vector модели Base): насколько каждая фраза похожа на образец 2.5
+    em = load("Qwen3-TTS-12Hz-0.6B-Base")
+
+    def emb(w, sr):
+        item = em.create_voice_clone_prompt(ref_audio=(w, sr), x_vector_only_mode=True)[0]
+        v = item.ref_spk_embedding.float().flatten()
+        return v / v.norm()
+
+    ref = emb(*sf.read(str(Path(__file__).parent / "ref" / "rem25.wav")))
+    for name, (w, sr) in made.items():
+        print(f"сходство с 2.5: {float(emb(w, sr) @ ref):.3f}  {name}", flush=True)
+
+
 def trim(wav: np.ndarray, sr: int) -> np.ndarray:
     """Тишина по краям — 50 мс."""
     loud = np.flatnonzero(np.abs(wav) > 0.01)
@@ -167,7 +213,7 @@ def vox_samples(out: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["samples", "round2", "pack"])
+    ap.add_argument("mode", choices=["samples", "round2", "round3", "pack"])
     ap.add_argument("out", type=Path)
     ap.add_argument("--variant", default="a", choices=list(VARIANTS))
     ap.add_argument("--seed", type=int, default=1)
@@ -180,6 +226,9 @@ def main() -> int:
         return 0
     if a.mode == "round2":
         round2(a.out)
+        return 0
+    if a.mode == "round3":
+        round3(a.out)
         return 0
     dm = load("Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     if a.mode == "samples":

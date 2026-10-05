@@ -227,7 +227,8 @@ class Voice:
                 return False
         pitch, rate, k = timbre_params(pitch, rate, cfg.get("voice_timbre", 0))
         try:
-            wav = self.neural.synth(text, cfg.get("silero_speaker", "xenia"), pitch, rate)
+            from .text import say_numbers
+            wav = self.neural.synth(say_numbers(text), cfg.get("silero_speaker", "xenia"), pitch, rate)
             speed_up_wav(wav, k)
         except Exception as e:
             log.warning("нейроголос: %s", e)

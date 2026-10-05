@@ -216,3 +216,13 @@ def test_game_mode_fast_only(tmp_path):
     assert a.plan("громче").source == "fast"
     assert a.plan("открой мне стим").source == "fast"            # известная программа — без модели
     assert a.plan("найди рецепт борща").source == "game" and client.calls == 0
+
+
+def test_say_numbers():
+    from rem.text import say_numbers
+    assert say_numbers("8 часов 15 минут.") == "восемь часов пятнадцать минут."
+    assert say_numbers("21 минута прошла") == "двадцать одна минута прошла"
+    assert say_numbers("Таймер на 1 минуту.") == "Таймер на одну минуту."
+    assert say_numbers("Сегодня понедельник, 5 октября.") == "Сегодня понедельник, пятое октября."
+    assert say_numbers("Громкость 35%.") == "Громкость тридцать пять процентов."
+    assert say_numbers("2026") == "две тысячи двадцать шесть"

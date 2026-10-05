@@ -204,3 +204,15 @@ def test_voiceclips_phrases_match_what_rem_says():
     p = voiceclips.phrases()
     assert "Рэм всё сделала." in p and "Таймер на 5 минут." in p and "5 минут прошли — таймер закончился." in p
     assert len(p) == len(set(map(voiceclips.key, p)))
+
+
+def test_rem_style_prompt_and_emoji():
+    from rem import config as cfgmod
+    from rem.brain import Brain, honest_reply
+    from rem.skills import active_skills
+    cfg = dict(cfgmod.DEFAULTS, rem_style=True)
+    b = Brain(cfg, active_skills(cfg), client=object())
+    assert "третьем лице" in b.system and "Этого я пока не умею" not in b.system
+    plain = Brain(dict(cfgmod.DEFAULTS), active_skills(cfg), client=object())
+    assert "третьем лице" not in plain.system
+    assert honest_reply("Рэм рада помочь! 😊", False) == "Рэм рада помочь!"

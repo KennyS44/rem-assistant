@@ -26,7 +26,8 @@
 | `rem/skills/` | умения; новое — функция с декоратором `@skill` |
 | `rem/assistant.py` | план → подтверждение → выполнение, игровой режим |
 | `rem/echo.py` | что играет в колонках — чтобы «Рем» из аниме не будил помощника |
-| `rem/speech.py`, `rem/voicepack.py` | голос Windows / нейроголос Silero, высота и темп |
+| `rem/speech.py`, `rem/voicepack.py` | голос Windows / нейроголос Silero, высота, темп и тембр |
+| `rem/voiceclips.py`, `rem/clips/` | частые фразы, заранее озвученные голосом Рем (`voice/design.py`) |
 | `rem/update.py` | проверка релизов на GitHub и тихая установка поверх |
 | `rem/ui.py` | трей, настройки, первый запуск, проверка слова |
 | `voice/rem_voice.py` | RemVoice — программа озвучки на torch, собирается отдельно (`voice.yml`) |
@@ -58,4 +59,5 @@ def say_hello(ctx):
 ## Лицензия
 
 MIT. Модели: Vosk (Apache 2.0), GigaAM (MIT), Qwen3 (Apache 2.0),
+Qwen3-TTS (Apache 2.0 — им озвучены готовые фразы в `rem/clips`; голос создан по текстовому описанию),
 Silero TTS (CC BY-NC-SA 4.0 — только некоммерческое использование; скачивается с сайта Silero).

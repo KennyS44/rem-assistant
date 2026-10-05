@@ -12,6 +12,7 @@ datas = (
     collect_data_files("onnx_asr")           # предобработчики звука (*.onnx) внутри пакета
     + collect_data_files("vosk")
     + copy_metadata("onnx_asr")
+    + [(os.path.join(ROOT, "rem", "clips", "*.wav"), "rem/clips")]   # готовые фразы голосом Рем
 )
 binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("pyaudiowpatch")   # libvosk.dll, portaudio
 

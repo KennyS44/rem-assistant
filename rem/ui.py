@@ -375,6 +375,10 @@ class SettingsWindow:
         self.rem_style = tk.BooleanVar(value=self.cfg.get("rem_style", False))
         row("", ttk.Checkbutton(f, text="Отвечать в стиле Рем: «Рэм слушает», «Сделано»",
                                 variable=self.rem_style))
+        self.clips = tk.BooleanVar(value=self.cfg.get("voice_clips", False))
+        row("", ttk.Checkbutton(f, text="Частые фразы — готовыми записями голоса Рем",
+                                variable=self.clips),
+            "Озвучены заранее голосом, созданным по описанию. Остальное говорит выбранный голос.")
         self.speak = tk.BooleanVar(value=self.cfg.get("speak_replies", True))
         row("", ttk.Checkbutton(f, text="Отвечать голосом", variable=self.speak))
 
@@ -428,12 +432,13 @@ class SettingsWindow:
         self._set_slider(self.rate, REM_PRESET["voice_rate"])
         self._set_slider(self.timbre, REM_PRESET["voice_timbre"])
         self.rem_style.set(True)
+        self.clips.set(REM_PRESET["voice_clips"])
         self._preview()
 
     def _voice_settings(self) -> dict:
         engine, key = self.voice_options[self.voice_choice.get()]
         out = {"voice_engine": engine, "voice_pitch": int(self.pitch.get()), "voice_rate": int(self.rate.get()),
-               "voice_timbre": int(self.timbre.get())}
+               "voice_timbre": int(self.timbre.get()), "voice_clips": bool(self.clips.get())}
         if engine == "silero":
             out["silero_speaker"] = key
         else:

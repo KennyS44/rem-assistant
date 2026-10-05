@@ -30,8 +30,9 @@ def matches(expect: list, actions: list) -> bool:
     return True
 
 
-def run(model: str, url: str, mode: str = "tools", verbose: bool = True) -> tuple[int, int, list[float]]:
-    cfg = {**DEFAULTS, "model": model, "brain_mode": mode}
+def run(model: str, url: str, mode: str = "tools", verbose: bool = True,
+        rem_style: bool = False) -> tuple[int, int, list[float]]:
+    cfg = {**DEFAULTS, "model": model, "brain_mode": mode, "rem_style": rem_style}
     brain = Brain(cfg, active_skills(cfg), Ollama(url, timeout=300))
     brain.plan("громче")                       # прогрев: загрузка модели и кэш промпта
     ok, times = 0, []
@@ -51,9 +52,10 @@ if __name__ == "__main__":
     ap.add_argument("--model", action="append", required=True)
     ap.add_argument("--url", default="http://127.0.0.1:11434")
     ap.add_argument("--mode", action="append", choices=["tools", "schema"])
+    ap.add_argument("--rem-style", action="store_true", help="промпт «в стиле Рем»")
     a = ap.parse_args()
     for m, mode in [(m, mode) for m in a.model for mode in a.mode or ["tools"]]:
         print(f"== {m} [{mode}]", flush=True)
-        ok, n, t = run(m, a.url, mode)
+        ok, n, t = run(m, a.url, mode, rem_style=a.rem_style)
         print(f"   точность {ok}/{n} ({ok / n * 100:.0f}%) | медиана {statistics.median(t):.2f} с, "
               f"макс {max(t):.2f} с (на этом процессоре)", flush=True)

@@ -21,6 +21,7 @@ DEFAULTS: dict = {
     "voice_pitch": 0,             # высота, % от -30 до +30
     "voice_rate": 100,            # темп, % от 60 до 140
     "voice_timbre": 0,            # тембр моложе, % от 0 до 15 (только нейроголос)
+    "voice_clips": False,         # частые фразы — готовыми записями голосом Рем (rem/clips)
     "rem_style": False,           # «Рэм слушает» и «Сделано» голосом вместо сигналов
     "speak_replies": True,
     "mic_device": None,           # имя микрофона; None — вход Windows по умолчанию

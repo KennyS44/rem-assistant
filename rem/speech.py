@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import logging
 import queue
+import re
 import sys
 import threading
 import wave
@@ -60,12 +61,12 @@ class Sounds:
 
 SILERO_VOICES = {"xenia": "Ксения", "baya": "Байя", "kseniya": "Ксюша",
                  "aidar": "Айдар (мужской)", "eugene": "Евгений (мужской)"}
-PREVIEW = "Рэм слушает. Таймер на пять минут поставлен."
+PREVIEW = "Рэм слушает. Сейчас восемь часов пятнадцать минут."
 
 # Подобрано замерами (высота, разброс интонации, резкость) под образ Рем: высокий (~300 Гц),
 # мягкий, с живой интонацией голос. «Ксюша» — единственный голос Silero с такой интонацией.
 REM_PRESET = {"voice_engine": "silero", "silero_speaker": "kseniya",
-              "voice_pitch": 25, "voice_rate": 90, "voice_timbre": 10}
+              "voice_pitch": 20, "voice_rate": 90, "voice_timbre": 10, "voice_clips": True}
 
 
 def sapi_params(pitch: int, rate: int) -> tuple[int, int]:
@@ -130,9 +131,11 @@ class Voice:
             self.q.put(("say", text, None))
 
     def preview(self, settings: dict, text: str = PREVIEW) -> None:
-        """Прослушать настройки из окна, ещё не сохраняя их."""
+        """Прослушать настройки из окна, ещё не сохраняя их. По предложению — чтобы было слышно
+        и готовую запись («Рэм слушает»), и выбранный голос."""
         self.speaking.set()
-        self.q.put(("say", text, dict(settings)))
+        for part in re.split(r"(?<=[.!?])\s+", text.strip()):
+            self.q.put(("say", part, dict(settings)))
 
     def wait(self, timeout: float = 15) -> None:
         """Дождаться окончания речи."""
@@ -193,6 +196,13 @@ class Voice:
             self.sapi.Voice = tokens.Item(pick)
 
     def _speak(self, text: str, cfg: dict) -> None:
+        if cfg.get("voice_clips"):
+            from .voiceclips import clips_for
+            clips = clips_for(text)
+            if clips:                               # частая фраза — готовая запись голосом Рем
+                for c in clips:
+                    play_wav(c)
+                return
         pitch, rate = int(cfg.get("voice_pitch", 0)), int(cfg.get("voice_rate", 100))
         if cfg.get("voice_engine") == "silero" and self._speak_neural(text, cfg, pitch, rate):
             return

@@ -62,6 +62,10 @@ class Assistant:
         else:
             log.info("ответ: %s", text)
 
+    def phrase(self, plain: str, rem: str) -> str:
+        """Служебная фраза: обычная или «в стиле Рем» (о себе в третьем лице, на «вы»)."""
+        return rem if self.config.get("rem_style") else plain
+
     def _sound(self, name: str) -> None:
         if self.sounds:
             self.sounds.play(name)
@@ -147,7 +151,7 @@ class Assistant:
             replies.append("Не могу связаться с моделью. Проверь, запущена ли Ollama."
                            if "недоступна" in plan.error else "Не удалось понять команду.")
         elif not plan.actions and not plan.reply:
-            replies.append("Команда не распознана.")
+            replies.append(self.phrase("Команда не распознана.", "Простите, Рэм не расслышала."))
         if plan.reply:
             replies.append(plan.reply)
 
@@ -160,7 +164,7 @@ class Assistant:
                 results.append((name, args, "пропущено (проверка)"))
                 continue
             if s.confirm and not self._confirm(s.title):
-                replies.append("Отменено.")
+                replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))
                 continue
             try:
@@ -172,7 +176,7 @@ class Assistant:
                 results.append((name, args, "только в Windows"))
             except Exception as e:
                 log.exception("умение %s упало", name)
-                replies.append(f"Не получилось: {s.title.lower()}.")
+                replies.append(self.phrase("Не получилось: ", "Простите, у Рэм не получилось: ") + f"{s.title.lower()}.")
                 results.append((name, args, f"ошибка: {e}"))
 
         self._write_journal(text, plan, results, time.perf_counter() - t0)
@@ -180,7 +184,7 @@ class Assistant:
             if replies:
                 self.say(" ".join(dict.fromkeys(replies)))
             elif plan.actions and self.config.get("rem_style") and self.voice:
-                self.say("Сделано.")
+                self.say("Рэм всё сделала.")
             elif plan.actions:
                 self._sound("done")
             else:
@@ -193,7 +197,7 @@ class Assistant:
     def _confirm(self, title: str) -> bool:
         if not self.listener or not self.voice:
             return False                       # без микрофона опасное не выполняем
-        self.voice.say(f"{title}? Скажи «да» или «нет».")
+        self.voice.say(title + self.phrase("? Скажи «да» или «нет».", "? Скажите «да» или «нет»."))
         self.voice.wait()
         self.listener.mic.flush()
         return self.listener.hear_yes_no()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -221,6 +222,23 @@ def build_tools_prompt(name: str = "Рэм") -> str:
 {TOOL_EXAMPLES}"""
 
 
+REM_STYLE = """
+
+Манера речи — как у Рэм: мягко, вежливо и преданно, к пользователю на «вы». О себе — только \
+в третьем лице и в женском роде, никогда «я»:
+«привет» → без вызова, ответ: «Здравствуйте! Рэм слушает вас.»
+«кто ты» → без вызова, ответ: «Рэм — ваша помощница. Рэм управляет компьютером по вашим командам.»
+«как дела» → без вызова, ответ: «У Рэм всё хорошо. Чем Рэм может помочь?»
+«спасибо» → без вызова, ответ: «Рэм рада помочь.»"""
+
+
+def rem_style(prompt: str) -> str:
+    """Промпт «в стиле Рем»: примеры тоже от третьего лица — модель копирует их охотнее правил."""
+    prompt = prompt.replace("Этого я пока не умею.", "Простите, Рэм пока этого не умеет.")
+    prompt = prompt.replace("Всё хорошо. Чем помочь?", "У Рэм всё хорошо. Чем Рэм может помочь?")
+    return prompt + REM_STYLE
+
+
 def build_schema(skills: list[Skill]) -> dict:
     variants = [{
         "type": "object",
@@ -266,11 +284,17 @@ def build_system_prompt(skills: list[Skill], name: str = "Рэм") -> str:
 
 CLAIMS = ("выключен", "включен", "заблокирован", "перезагру", "открыт", "открываю", "закрыт",
           "сделал", "сделан", "свернут", "установлен", "поставил", "запущен", "запускаю",
-          "сохранил", "создал", "создан", "громкость", "пауза", "снимок", "таймер")
+          "сохранил", "создал", "создан", "громкость", "пауза", "снимок", "таймер",
+          "открыл", "закрыл", "выключил", "включил", "запустил", "свернул", "заблокировал")
+
+
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+")
 
 
 def honest_reply(reply: str, has_actions: bool) -> str:
-    """Модель без вызова действия иногда пишет «Компьютер выключен». Такое не озвучиваем."""
+    """Модель без вызова действия иногда пишет «Компьютер выключен». Такое не озвучиваем.
+    Смайлики убираем: голос их не произносит."""
+    reply = " ".join(EMOJI.sub("", reply).split())
     low = reply.lower()
     if not has_actions and any(c in low for c in CLAIMS):
         return ""
@@ -331,6 +355,8 @@ class Brain:
         else:
             self.schema = build_schema(skills)
             self.system = build_system_prompt(skills, name)
+        if self.config.get("rem_style"):
+            self.system = rem_style(self.system)
 
     def plan(self, text: str, cpu_only: bool = False) -> Plan:
         t = time.perf_counter()

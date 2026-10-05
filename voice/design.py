@@ -193,13 +193,19 @@ def loudness(w: np.ndarray) -> np.ndarray:
     return w * min(1.0, 0.95 / max(1e-6, np.abs(w).max()))
 
 
-def pack(dm, out: Path) -> None:
-    """Голос 2.5 (описание FLUENT) для каждой фразы; лучший из CANDIDATES вариантов."""
+def pack(dm, out: Path, only: list[str] | None = None, candidates: int = CANDIDATES) -> None:
+    """Голос 2.5 (описание FLUENT) для каждой фразы; лучший из candidates вариантов.
+    only — переозвучить только эти фразы."""
     import json
     import onnx_asr
     from difflib import SequenceMatcher
     from rem.text import norm
     phrases = voiceclips.phrases()                          # до загрузки моделей — ошибка видна сразу
+    if only:
+        missing = [t for t in only if t not in phrases]
+        if missing:
+            raise SystemExit(f"нет таких фраз: {missing}")
+        phrases = only
     asr = onnx_asr.load_model("gigaam-v3-e2e-ctc", quantization="int8")
     em = load("Qwen3-TTS-12Hz-0.6B-Base")
 
@@ -214,13 +220,16 @@ def pack(dm, out: Path) -> None:
     report = []
     for text in phrases:
         best = None
-        for seed in range(1, CANDIDATES + 1):
+        for seed in range(1, candidates + 1):
             torch.manual_seed(seed)
             wavs, sr = dm.generate_voice_design(text=spoken(text), language="Russian", instruct=FLUENT)
             w = short_pauses(trim(np.asarray(wavs[0]), sr), sr)
             w16 = np.interp(np.arange(0, len(w), sr / 16000), np.arange(len(w)), w).astype(np.float32)
             heard = asr.recognize(w16, sample_rate=16000)
             ok = SequenceMatcher(None, norm(heard), norm(text)).ratio()
+            # лишние слова (например, обрывок на другом языке в конце) — вариант не годится
+            if len(norm(heard).split()) > max(len(norm(text).split()), len(norm(spoken(text)).split())):
+                ok = 0.0
             f0, sim = f0_median(w, sr), float(emb(w, sr) @ ref)
             off = abs(12 * np.log2(f0 / ref_f0)) if f0 else 12.0
             score = sim * 100 - off - (50 if ok < 0.85 else 0)          # полутон ≈ 0,01 сходства
@@ -283,6 +292,8 @@ def main() -> int:
     ap.add_argument("--variant", default="a", choices=list(VARIANTS))
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--engine", default="qwen", choices=["qwen", "vox"])
+    ap.add_argument("--only", action="append", help="переозвучить только эту фразу (можно несколько раз)")
+    ap.add_argument("--candidates", type=int, default=CANDIDATES)
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(4)
@@ -303,7 +314,7 @@ def main() -> int:
                 sf.write(a.out / f"qwen-{v}{seed}.wav", wav, sr, subtype="PCM_16")
         return 0
 
-    pack(dm, a.out)
+    pack(dm, a.out, a.only, a.candidates)
     return 0
 
 

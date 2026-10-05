@@ -18,6 +18,9 @@ on:
       engine:
         description: "qwen (Qwen3-TTS) или vox (VoxCPM2), для samples"
         default: qwen
+      only:
+        description: "для pack: переозвучить только эту фразу (пусто — все)"
+        default: ""
 
 jobs:
   design:
@@ -35,7 +38,12 @@ jobs:
           pip install soundfile numpy
           if [ "${{ inputs.engine }}" = vox ]; then pip install voxcpm; else pip install qwen-tts ruaccent onnx-asr onnxruntime rapidfuzz; fi
       - name: Озвучка
-        run: python voice/design.py ${{ inputs.mode }} out --variant ${{ inputs.variant }} --seed ${{ inputs.seed }} --engine ${{ inputs.engine }}
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          extra=()
+          if [ -n "$ONLY" ]; then extra=(--only "$ONLY" --candidates 8); fi
+          python voice/design.py ${{ inputs.mode }} out --variant ${{ inputs.variant }} --seed ${{ inputs.seed }} --engine ${{ inputs.engine }} "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: rem-voice-${{ inputs.mode }}-${{ inputs.engine }}

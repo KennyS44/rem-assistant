@@ -142,11 +142,7 @@ def apply_theme(root, on: bool) -> None:
     style.map("TNotebook.Tab", background=[("selected", SURFACE), ("active", ACCENT_SOFT)],
               foreground=[("selected", ACCENT)], lightcolor=[("selected", SURFACE)])
 
-    for w in ("TCheckbutton", "TRadiobutton"):
-        style.configure(w, indicatorbackground=SURFACE, indicatorforeground="white",
-                        upperbordercolor=LINE, lowerbordercolor=LINE)
-        style.map(w, indicatorbackground=[("selected", ACCENT), ("active", ACCENT_SOFT)],
-                  background=[("active", BG)])
+    _checkbox(root, style)
     for w in ("TEntry", "TCombobox", "TSpinbox"):
         style.configure(w, padding=4, lightcolor=SURFACE)
         style.map(w, bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
@@ -161,6 +157,36 @@ def apply_theme(root, on: bool) -> None:
     style.configure("TSeparator", background=LINE)
     style.configure("Vertical.TScrollbar", background=ACCENT_SOFT, troughcolor=BG, bordercolor=BG,
                     lightcolor=ACCENT_SOFT, darkcolor=ACCENT_SOFT)
+
+
+def _check_image(on: bool, border: str, fill: str) -> Image.Image:
+    """Галочка 18×18 (и 6 px отступа до подписи), нарисованная вчетверо крупнее."""
+    k = 4
+    img = Image.new("RGBA", (24 * k, 18 * k), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((k, k, 17 * k, 17 * k), radius=4 * k, fill=fill, outline=border, width=int(1.5 * k))
+    if on:
+        d.line([(5 * k, 9 * k), (8 * k, 12 * k), (13 * k, 6 * k)], fill="white", width=2 * k, joint="curve")
+    return img.resize((24, 18), Image.LANCZOS)
+
+
+def _checkbox(root, style) -> None:
+    from PIL import ImageTk
+    if "Rem.check" not in style.element_names():
+        imgs = [ImageTk.PhotoImage(_check_image(*a), master=root) for a in (
+            (False, "#7f95b5", SURFACE), (True, ACCENT, ACCENT), (False, ACCENT, ACCENT_SOFT),
+            (True, ACCENT_DARK, ACCENT_DARK), (False, LINE, BG), (True, LINE, LINE))]
+        root._rem_check = imgs                   # иначе Tk потеряет картинки
+        off, on, off_hover, on_hover, off_dis, on_dis = imgs
+        style.element_create("Rem.check", "image", off,
+                             ("disabled", "selected", on_dis), ("disabled", off_dis),
+                             ("active", "selected", on_hover), ("selected", on), ("active", off_hover))
+    style.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+        ("Rem.check", {"side": "left", "sticky": ""}),
+        ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+            ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+    style.configure("TCheckbutton", padding=(0, 2))
+    style.map("TCheckbutton", background=[("active", BG)])
 
 
 # ——— карточка ответа ———

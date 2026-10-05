@@ -199,6 +199,7 @@ def pack(dm, out: Path) -> None:
     import onnx_asr
     from difflib import SequenceMatcher
     from rem.text import norm
+    phrases = voiceclips.phrases()                          # до загрузки моделей — ошибка видна сразу
     asr = onnx_asr.load_model("gigaam-v3-e2e-ctc", quantization="int8")
     em = load("Qwen3-TTS-12Hz-0.6B-Base")
 
@@ -211,7 +212,7 @@ def pack(dm, out: Path) -> None:
     ref, ref_f0 = emb(rw, rsr), f0_median(rw, rsr)
     (out / "clips").mkdir(parents=True, exist_ok=True)
     report = []
-    for text in voiceclips.phrases():
+    for text in phrases:
         best = None
         for seed in range(1, CANDIDATES + 1):
             torch.manual_seed(seed)

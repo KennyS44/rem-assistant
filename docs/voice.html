@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подбор голоса Рем</title>
+<meta name="theme-color" content="#0e1014">
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <h1>Подбор голоса Рем</h1>
+    <p class="lead">Послушай и напиши номер, который ближе всего к Рем. Следующий круг уточнит голос вокруг него.</p>
+    <p class="meta"><a href="./">← На главную</a></p>
+  </div>
+</header>
+<main class="wrap">
+  <section>
+    <p>Каждый голос создан нейросетью только по словесному описанию: «мягкий, вежливый, преданный, аниме-героиня…». Записи из аниме не использовались — голос актрисы не копируется. Все говорят одну фразу.</p>
+    <p class="hint">Для сравнения — нынешний голос из кнопки «Как у Рем» (Silero, работает прямо в Рэм):</p>
+    <div class="voices">
+      <div class="voice"><h3>№ 0 — сейчас в Рэм</h3><p>Silero «Ксюша», около 300 Гц</p><audio controls preload="none" src="voices/rem.wav"></audio></div>
+    </div>
+    <div class="voices">
+      <div class="voice"><h3>№ 1</h3><p>VoxCPM2, около 328 Гц</p><audio controls preload="none" src="voices/lab/01.mp3"></audio></div>
+      <div class="voice"><h3>№ 2</h3><p>VoxCPM2, около 358 Гц</p><audio controls preload="none" src="voices/lab/02.mp3"></audio></div>
+      <div class="voice"><h3>№ 3</h3><p>VoxCPM2, около 266 Гц</p><audio controls preload="none" src="voices/lab/03.mp3"></audio></div>
+      <div class="voice"><h3>№ 4</h3><p>VoxCPM2, около 324 Гц</p><audio controls preload="none" src="voices/lab/04.mp3"></audio></div>
+      <div class="voice"><h3>№ 5</h3><p>VoxCPM2, около 358 Гц</p><audio controls preload="none" src="voices/lab/05.mp3"></audio></div>
+      <div class="voice"><h3>№ 6</h3><p>VoxCPM2, около 363 Гц</p><audio controls preload="none" src="voices/lab/06.mp3"></audio></div>
+      <div class="voice"><h3>№ 7</h3><p>VoxCPM2, около 413 Гц</p><audio controls preload="none" src="voices/lab/07.mp3"></audio></div>
+      <div class="voice"><h3>№ 8</h3><p>VoxCPM2, около 428 Гц</p><audio controls preload="none" src="voices/lab/08.mp3"></audio></div>
+    </div>
+  </section>
+</main>
+<footer><div class="wrap">Модели: Qwen3-TTS и VoxCPM2, лицензия Apache 2.0.</div></footer>
+</body>
+</html>

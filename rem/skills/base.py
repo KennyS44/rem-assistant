@@ -44,6 +44,7 @@ class Skill:
     examples: list = field(default_factory=list)
     confirm: bool = False          # спрашивать «да/нет» перед выполнением
     category: str = "Прочее"
+    retell: bool = False           # обработчик возвращает данные — модель пересказывает их фразой
 
     def args_schema(self) -> dict:
         return {
@@ -66,10 +67,10 @@ REGISTRY: dict[str, Skill] = {}
 
 
 def skill(name: str, title: str, description: str, *, params=(), examples=(),
-          confirm: bool = False, category: str = "Прочее"):
+          confirm: bool = False, category: str = "Прочее", retell: bool = False):
     """Декоратор: регистрирует функцию как умение."""
     def wrap(fn):
         REGISTRY[name] = Skill(name, title, description, fn, list(params), list(examples),
-                               confirm, category)
+                               confirm, category, retell)
         return fn
     return wrap

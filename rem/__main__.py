@@ -251,6 +251,15 @@ class App:
                 self.listener.speakers = self.speakers if self.speakers.available else None
         if self.config["model"] not in (self.assistant.client.models() if self.assistant.client.available() else []):
             threading.Thread(target=self._ensure_ollama, daemon=True).start()
+        cloud = self.config.get("cloud_model")
+        if cloud and cloud != old.get("cloud_model"):          # облачной модели нужна «заглушка» в Ollama
+            threading.Thread(target=lambda: self._quiet(self.assistant.client.pull, cloud), daemon=True).start()
+
+    def _quiet(self, fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception as e:
+            self.log.warning("%s: %s", getattr(fn, "__name__", fn), e)
 
     def _switch_mic(self) -> None:
         from .listen import Microphone, pick_input
@@ -331,6 +340,13 @@ def selftest(report: str | None = None) -> int:
     check("умения загружены", len(skills) >= 20)
     check("схема ответа строится", len(json.dumps(build_schema(skills))) > 1000)
     check("системный промпт", "open_app" in build_system_prompt(skills))
+    if sys.platform == "win32":
+        from . import winapi
+        try:
+            wins = winapi.open_windows()
+            check(f"список открытых окон ({len(wins)})", isinstance(wins, list))
+        except Exception as e:
+            check(f"список открытых окон: {e}", False)
     fp = FastPath(skills)
     check("быстрый путь: громкость 30", fp.match("громкость 30").actions == [("volume_set", {"level": 30})])
     check("быстрый путь: открой ≠ закрой", fp.match("закрой загрузки") is None)

@@ -234,6 +234,7 @@ class UI:
 
 
 class SettingsWindow:
+    CLOUD_OFF = "выключена"
     GAME_MODES = {"fast_only": "только простые команды", "cpu": "всё, но медленно (на процессоре)",
                   "off": "не отслеживать игры"}
 
@@ -289,6 +290,18 @@ class SettingsWindow:
         self.model_status.grid(row=r, column=1, sticky="w", pady=(0, 8))
         r += 1
         threading.Thread(target=self._probe_model, daemon=True).start()
+
+        from .brain import CLOUD_MODELS
+        self.cloud = tk.StringVar(value=self.cfg.get("cloud_model") or self.CLOUD_OFF)
+        row("Облачная модель", ttk.Combobox(f, textvariable=self.cloud, values=[self.CLOUD_OFF] + CLOUD_MODELS))
+        cf = ttk.Frame(f)
+        ttk.Button(cf, text="Подключить", command=self._connect_cloud).pack(side="left")
+        self.cloud_status = ttk.Label(cf, text="", wraplength=300, justify="left")
+        self.cloud_status.pack(side="left", padx=PAD)
+        row("", cf, "Умнее модели на компьютере, отвечает за 1–3 с и не занимает видеокарту — работает "
+                    "и во время игр. Нужны интернет и бесплатный аккаунт Ollama (ежемесячного запаса "
+                    "хватает на тысячи команд). Команды и названия открытых окон уходят в облако Ollama. "
+                    "Без интернета Рэм сама переходит на модель на компьютере.")
 
         self.keep = tk.IntVar(value=int(self.cfg.get("keep_alive_min", 3)))
         row("Держать модель в видеопамяти", ttk.Spinbox(f, from_=1, to=30, textvariable=self.keep, width=6),
@@ -522,6 +535,54 @@ class SettingsWindow:
             text = f"ошибка: {e}"
         self.ui.call(lambda: self.model_status.winfo_exists() and self.model_status.config(text=text))
 
+    def _connect_cloud(self):
+        """Вход в аккаунт Ollama (в браузере) → первая облачная модель, которая ответила верно."""
+        from .brain import CLOUD_MODELS, Brain, OllamaError
+        cl = self.app.assistant.client
+        chosen = self.cloud.get().strip()
+        order = ([chosen] if chosen and chosen != self.CLOUD_OFF else []) + \
+            [m for m in CLOUD_MODELS if m != chosen]
+
+        def status(text, color="#666"):
+            self.ui.call(lambda: self.cloud_status.winfo_exists()
+                         and self.cloud_status.config(text=text, foreground=color))
+
+        def work():
+            import time
+            import webbrowser
+            try:
+                if not cl.available():
+                    return status("Ollama не запущена", "#b33")
+                url = cl.signin_url()
+                if url:
+                    webbrowser.open(url)
+                    status("Войдите в Ollama в открывшемся браузере и нажмите «Connect»…")
+                    deadline = time.monotonic() + 300
+                    while url and time.monotonic() < deadline:
+                        time.sleep(3)
+                        url = cl.signin_url()
+                    if url:
+                        return status("Вход не завершён — нажмите «Подключить» ещё раз.", "#b33")
+                err = ""
+                for m in order:
+                    status(f"проверяю {m}…")
+                    try:
+                        cl.pull(m)
+                        brain = Brain({**self.app.config, "cloud_model": m}, self.app.assistant.skills, cl)
+                        brain.plan("громче", local=False)                       # первый запрос — дольше
+                        plan = brain.plan("сделай звук на тридцать", local=False)
+                    except OllamaError as e:
+                        plan = None
+                        err = str(e)
+                    if plan and plan.actions == [("volume_set", {"level": 30})]:
+                        self.ui.call(lambda: self.cloud.set(m))
+                        return status(f"✓ {m}: ответ за {plan.seconds:.1f} с. Нажмите «Сохранить».", "#2a7")
+                    err = (plan.error if plan else err) or err or "ответ неверный"
+                status(f"Ни одна облачная модель не ответила: {err[:150]}", "#b33")
+            except Exception as e:
+                status(f"ошибка: {e}", "#b33")
+        threading.Thread(target=work, daemon=True).start()
+
     # вкладка «Умения»
     def _skills(self, nb):
         outer = ttk.Frame(nb, padding=16)
@@ -675,8 +736,8 @@ class SettingsWindow:
 
             def work():
                 plan = self.app.assistant.plan(text)
-                lines = [f"Источник: {'быстрый путь' if plan.source == 'fast' else 'модель'}"
-                         + (f", {plan.seconds:.2f} с" if plan.source == "llm" else "")]
+                src = {"fast": "быстрый путь", "cloud": "облачная модель"}.get(plan.source, "модель")
+                lines = [f"Источник: {src}" + (f", {plan.seconds:.2f} с" if plan.source in ("llm", "cloud") else "")]
                 for name, args in plan.actions:
                     s = self.app.assistant.by_name.get(name)
                     lines.append(f"→ {s.title if s else name} {args if args else ''}")
@@ -707,6 +768,8 @@ class SettingsWindow:
         old = dict(c)
         c["wake_word"] = wake
         c["model"] = self.model.get().strip()
+        cloud = self.cloud.get().strip()
+        c["cloud_model"] = "" if cloud == self.CLOUD_OFF else cloud
         c["keep_alive_min"] = max(1, min(30, int(self.keep.get())))
         c["game_mode"] = next(k for k, v in self.GAME_MODES.items() if v == self.game.get())
         c["search_engine"] = self.engine.get()

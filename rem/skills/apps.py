@@ -162,7 +162,46 @@ def _matching_pids(ctx, name: str) -> set[int]:
 def close_app(ctx, name: str):
     pids = _matching_pids(ctx, name)
     hwnds = winapi.windows_of_pids(pids) if pids else []
+    if not hwnds:                                  # «закрой окно с отчётом» — по заголовку
+        hwnds = [w["hwnd"] for w in find_windows(ctx, name)[:1]]
     if not hwnds:
         return f"Программа «{name}» не запущена."
     winapi.close_windows(hwnds)
     return None
+
+
+def find_windows(ctx, name: str) -> list[dict]:
+    """Открытые окна программы name или с name в заголовке; лучшие — первыми."""
+    wins = winapi.open_windows()
+    pids = _matching_pids(ctx, name)
+    hits = [w for w in wins if w["pid"] in pids]
+    if hits:
+        return hits
+    q = norm(name)
+    scored = [(fuzz.partial_ratio(q, norm(w["title"] + " " + w["exe"].removesuffix(".exe"))), w) for w in wins]
+    return [w for score, w in sorted(scored, key=lambda x: -x[0]) if score >= 80]
+
+
+@skill("switch_window", "Переключиться на окно",
+       "Показать уже открытое окно: вывести на передний план, свёрнутое — развернуть. "
+       "name — название программы или слова из заголовка окна (см. список открытых окон).",
+       params=[Param("name", "string", "программа или часть заголовка окна")],
+       examples=["переключись на {app}", "перейди в {app}", "разверни {app}"],
+       category="Программы")
+def switch_window(ctx, name: str):
+    hits = find_windows(ctx, name)
+    if not hits:
+        return f"Окно «{name}» не найдено."
+    winapi.focus_window(hits[0]["hwnd"])
+    return None
+
+
+@skill("list_windows", "Что открыто", "Перечислить открытые окна (на вопрос «что открыто?»).",
+       examples=["что открыто", "что у меня открыто", "какие окна открыты", "какие программы открыты"],
+       category="Программы")
+def list_windows(ctx):
+    titles = [w["title"][:60] for w in winapi.open_windows()]
+    if not titles:
+        return "Открытых окон нет."
+    more = f" и ещё {len(titles) - 8}" if len(titles) > 8 else ""
+    return "Открыто: " + "; ".join(titles[:8]) + more + "."

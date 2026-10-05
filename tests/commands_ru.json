@@ -43,5 +43,10 @@
   {"text": "отправь сообщение маме", "expect": []},
   {"text": "удали все файлы на рабочем столе", "expect": []},
   {"text": "отформатируй диск це", "expect": []},
-  {"text": "как дела", "expect": []}
+  {"text": "как дела", "expect": []},
+  {"text": "переключись на телеграм", "expect": [["switch_window", {"name": "telegram|телеграм"}]]},
+  {"text": "покажи окно с хромом", "expect": [["switch_window", {"name": "chrome|хром"}]]},
+  {"text": "сколько свободного места на диске це", "expect": [["run_command", {"command": "c"}]]},
+  {"text": "какой у меня ай пи адрес", "expect": [["run_command", {"command": "ip"}]]},
+  {"text": "какой заряд у ноутбука", "expect": [["run_command", {"command": "batter"}]]}
 ]

@@ -226,3 +226,77 @@ def test_say_numbers():
     assert say_numbers("Сегодня понедельник, 5 октября.") == "Сегодня понедельник, пятое октября."
     assert say_numbers("Громкость 35%.") == "Громкость тридцать пять процентов."
     assert say_numbers("2026") == "две тысячи двадцать шесть"
+
+
+class CloudDown(FakeClient):
+    """Облако не отвечает, модель на компьютере — отвечает."""
+    def __init__(self, answer):
+        super().__init__(answer)
+        self.models_used = []
+
+    def chat_tools(self, model, *a, **k):
+        from rem.brain import OllamaError
+        self.models_used.append(model)
+        if model.endswith("cloud"):
+            raise OllamaError('Ollama ответила 401: {"error":"unauthorized"}')
+        return self.chat()
+
+
+def test_cloud_falls_back_to_local_and_warns_once(tmp_path):
+    client = CloudDown({"actions": [{"skill": "web_search", "args": {"query": "борщ"}}], "reply": ""})
+    a = Assistant({**cfgmod.DEFAULTS, "cloud_model": "gpt-oss:120b-cloud"}, client=client, apps=AppIndex([]))
+    notes = []
+    a.notify_cb = notes.append
+    a.journal = tmp_path / "actions.log"
+    plan = a.plan("найди рецепт борща")
+    assert plan.source == "llm" and plan.actions == [("web_search", {"query": "борщ"})]
+    assert client.models_used == ["gpt-oss:120b-cloud", cfgmod.DEFAULTS["model"]]
+    a.plan("найди рецепт щей")
+    assert len(notes) == 1 and "аккаунт" in notes[0]
+
+
+def test_game_mode_uses_cloud(tmp_path):
+    client = FakeClient({"actions": [{"skill": "web_search", "args": {"query": "борщ"}}], "reply": ""})
+    a = Assistant({**cfgmod.DEFAULTS, "cloud_model": "x:cloud"}, client=client, apps=AppIndex([]))
+    a.game_mode = True
+    plan = a.plan("найди рецепт борща")
+    assert plan.source == "cloud" and client.calls == 1
+
+
+def test_windows_context_goes_to_model():
+    from rem.brain import Brain, windows_context
+    seen = []
+
+    class C(FakeClient):
+        def chat_tools(self, model, system, user, *a, **k):
+            seen.append(user)
+            return self.answer
+    ctx = windows_context([{"title": "Отчёт.docx — Word", "exe": "WINWORD.EXE", "active": True}])
+    Brain(dict(cfgmod.DEFAULTS), active_skills(cfgmod.DEFAULTS), C({"actions": [], "reply": "Word"})).plan(
+        "что у меня открыто", context=ctx)
+    assert "WINWORD: «Отчёт.docx — Word» (активное)" in seen[0] and seen[0].endswith("Команда: что у меня открыто")
+
+
+def test_run_command_asks_with_description_and_retells(tmp_path, monkeypatch):
+    from rem.skills import REGISTRY
+    client = FakeClient({"actions": [{"skill": "run_command", "args": {
+        "command": "Get-PSDrive C", "description": "узнать место на диске C"}}], "reply": ""})
+    client.ask = lambda *a, **k: "На диске C свободно 120 гигабайт."
+    a = Assistant(dict(cfgmod.DEFAULTS), client=client, apps=AppIndex([]))
+    a.journal = tmp_path / "actions.log"
+    asked, notes, said = [], [], []
+    monkeypatch.setattr(a, "_confirm", lambda q: asked.append(q) or True)
+    monkeypatch.setattr(REGISTRY["run_command"], "handler", lambda ctx, **k: "Free 120 GB")
+    a.reload()
+    a.notify_cb = notes.append
+    a.say = said.append
+    a.handle("сколько места на диске це")
+    assert asked == ["Узнать место на диске C"] and notes == ["Команда: Get-PSDrive C"]
+    assert said == ["На диске C свободно 120 гигабайт."]
+
+
+def test_call_written_as_text():
+    from rem.brain import text_calls
+    assert text_calls("volume_mute()") == [{"skill": "volume_mute", "args": {}}]
+    assert text_calls('volume_set(level=30), web_search(query="блины")')[1]["args"] == {"query": "блины"}
+    assert text_calls("Здравствуйте! Рэм слушает (внимательно).") == []

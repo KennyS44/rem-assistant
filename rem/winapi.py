@@ -39,6 +39,13 @@ if IS_WINDOWS:
     user32.MonitorFromWindow.restype = wintypes.HANDLE
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    for _fn in ("GetWindowTextLengthW", "IsWindowVisible", "IsIconic", "SetForegroundWindow"):
+        getattr(user32, _fn).argtypes = [wintypes.HWND]
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 
     class MONITORINFO(ctypes.Structure):
         _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
@@ -125,6 +132,51 @@ def windows_of_pids(pids: set[int]) -> list[int]:
 
     user32.EnumWindows(EnumWindowsProc(cb), 0)
     return found
+
+
+def open_windows() -> list[dict]:
+    """Окна с панели задач: [{"hwnd", "title", "exe", "pid", "active"}], активное — первым.
+    Невидимые, служебные и «спрятанные» окна приложений Магазина не попадают."""
+    if not IS_WINDOWS:
+        return []
+    import psutil
+    dwmapi = ctypes.WinDLL("dwmapi")
+    fg, me, out = user32.GetForegroundWindow(), os.getpid(), []
+
+    def cb(hwnd, _):
+        n = user32.GetWindowTextLengthW(hwnd)
+        if not n or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):    # 4 — GW_OWNER
+            return True
+        if user32.GetWindowLongW(hwnd, -20) & 0x80:                 # GWL_EXSTYLE, WS_EX_TOOLWINDOW
+            return True
+        cloaked = wintypes.DWORD()
+        dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), 4)   # DWMWA_CLOAKED
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if cloaked.value or pid.value == me:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        if buf.value == "Program Manager":
+            return True
+        try:
+            exe = psutil.Process(pid.value).name()
+        except psutil.Error:
+            exe = ""
+        out.append({"hwnd": hwnd, "title": buf.value, "exe": exe, "pid": pid.value, "active": hwnd == fg})
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(cb), 0)
+    return sorted(out, key=lambda w: not w["active"])
+
+
+def focus_window(hwnd: int) -> None:
+    """Вывести окно на передний план (свёрнутое — развернуть)."""
+    _need_windows()
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)                                   # SW_RESTORE
+    press(VK["alt"])            # иначе Windows не даёт фоновой программе переключать окна
+    user32.SetForegroundWindow(hwnd)
 
 
 def close_windows(hwnds: list[int]) -> None:

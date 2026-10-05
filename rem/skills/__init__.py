@@ -1,5 +1,5 @@
 """Все умения помощника. Новое умение — новый модуль здесь, импортированный ниже."""
-from . import apps, media, system, web  # noqa: F401 — регистрируют умения
+from . import apps, media, shell, system, web  # noqa: F401 — регистрируют умения
 from .base import REGISTRY, Param, Skill, skill  # noqa: F401
 from .custom import build_custom
 

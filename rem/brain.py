@@ -1,4 +1,8 @@
-"""«Мозг»: превращает свободную фразу в действия через локальную модель в Ollama.
+"""«Мозг»: превращает свободную фразу в действия через модель в Ollama.
+
+Модель — на компьютере (config["model"]) или облачная модель Ollama (config["cloud_model"],
+нужен вход в аккаунт Ollama). Облачная умнее и не занимает видеокарту; без интернета или
+при исчерпанном лимите Рэм сама переходит на модель на компьютере.
 
 Два режима:
   * tools (по умолчанию) — родной вызов функций модели. На наборе из 45 команд
@@ -104,6 +108,17 @@ class Ollama:
             return False
         return wait_up(wait)
 
+    def signin_url(self) -> str | None:
+        """None — Ollama вошла в аккаунт (облачные модели доступны); иначе ссылка для входа."""
+        try:
+            self._post("/api/me", {}, timeout=10)
+            return None
+        except OllamaError as e:
+            m = re.search(r'"signin_url":\s*"([^"]+)"', str(e))
+            if m:
+                return json.loads(f'"{m.group(1)}"')
+            raise
+
     def models(self) -> list[str]:
         return [m["name"] for m in self._get("/api/tags").get("models", [])]
 
@@ -161,7 +176,8 @@ class Ollama:
 
 
     def chat_tools(self, model: str, system: str, user: str, tools: list[dict], *,
-                   keep_alive: str = "3m", cpu_only: bool = False, think: bool | None = False) -> dict:
+                   keep_alive: str = "3m", cpu_only: bool = False, think: bool | None = False,
+                   timeout: float | None = None) -> dict:
         """Родной вызов функций модели → {"actions": [...], "reply": текст}."""
         body = {
             "model": model,
@@ -177,11 +193,11 @@ class Ollama:
         if cpu_only:
             body["options"]["num_gpu"] = 0
         try:
-            out = self._post("/api/chat", body)
+            out = self._post("/api/chat", body, timeout)
         except OllamaError as e:
             if think is not None and "think" in str(e).lower():
                 body.pop("think")
-                out = self._post("/api/chat", body)
+                out = self._post("/api/chat", body, timeout)
             else:
                 raise
         msg = out.get("message", {})
@@ -192,7 +208,39 @@ class Ollama:
             if isinstance(args, str):
                 args = json.loads(args or "{}")
             actions.append({"skill": fn.get("name"), "args": args})
-        return {"actions": actions, "reply": msg.get("content") or ""}
+        reply = msg.get("content") or ""
+        return {"actions": actions or text_calls(reply), "reply": "" if not actions and text_calls(reply) else reply}
+
+    def ask(self, model: str, system: str, user: str, timeout: float | None = None) -> str:
+        """Просто ответ текстом — пересказать вывод команды."""
+        body = {"model": model, "stream": False, "think": False,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 120}}
+        try:
+            out = self._post("/api/chat", body, timeout)
+        except OllamaError as e:
+            if "think" not in str(e).lower():
+                raise
+            body.pop("think")
+            out = self._post("/api/chat", body, timeout)
+        return (out.get("message") or {}).get("content") or ""
+
+
+CALL = re.compile(r"^\s*(\w+)\((.*?)\)\s*$")
+ARG = re.compile(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(-?\d+))""")
+
+
+def text_calls(reply: str) -> list[dict]:
+    """Модель иногда пишет вызов текстом — «volume_mute()» — вместо настоящего вызова.
+    Такой ответ разбираем как вызов; что это за умение и аргументы, потом проверит validate."""
+    calls = []
+    for part in re.split(r"\s*[,;\n]\s*(?=\w+\()", reply.strip()):
+        m = CALL.match(part)
+        if not m:
+            return []
+        args = {k: int(n) if n else dq or sq for k, dq, sq, n in ARG.findall(m.group(2))}
+        calls.append({"skill": m.group(1), "args": args})
+    return calls
 
 
 def build_tools(skills: list[Skill]) -> list[dict]:
@@ -207,19 +255,36 @@ TOOL_EXAMPLES = """«открой телегу» → open_app(name="Telegram")
 «удали все файлы на диске» → без вызова, ответ: «Этого я пока не умею.»"""
 
 
-def build_tools_prompt(name: str = "Рэм") -> str:
+SHELL_RULE = """2. Если готовой функции нет, но просьбу можно выполнить командой PowerShell на этом \
+компьютере, — вызови run_command. Если нельзя или это опасно (удалить файлы, отформатировать диск, \
+отключить защиту, купить, написать людям) — ничего не вызывай и коротко скажи, что этого пока не умеешь."""
+
+SHELL_EXAMPLE = """
+«сколько места на диске це» → run_command(command="Get-PSDrive C | Select-Object Used, Free", \
+description="узнать свободное место на диске C")"""
+
+WINDOWS_RULE = """
+6. Перед командой может быть список открытых окон. По нему отвечай на вопросы об окнах \
+и выбирай окно для switch_window и close_app."""
+
+
+def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) -> str:
+    have = {s.name for s in skills or []}
+    rule2 = SHELL_RULE if "run_command" in have else \
+        "2. Если подходящей функции нет — ничего не вызывай и коротко скажи, что этого пока не умеешь."
+    examples = TOOL_EXAMPLES + (SHELL_EXAMPLE if "run_command" in have else "")
     return f"""Ты — {name}, голосовой помощник на компьютере с Windows. Команда распознана из речи, \
 в ней бывают ошибки — угадывай смысл.
 
 Выполняй команды вызовом функций. Правила:
 1. Если команде соответствует функция — обязательно вызови её. Не пиши, что сделал, без вызова.
-2. Если подходящей функции нет — ничего не вызывай и коротко скажи, что этого пока не умеешь.
+{rule2}
 3. Несколько функций — только если явно просят несколько вещей, не больше трёх.
 4. Текстом отвечай только на вопросы и болтовню, одной короткой фразой по-русски.
-5. Не выдумывай аргументы, которых нет в команде.
+5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}
 
 Примеры:
-{TOOL_EXAMPLES}"""
+{examples}"""
 
 
 REM_STYLE = """
@@ -339,35 +404,87 @@ def validate(raw: dict, skills: list[Skill]) -> Plan:
     return plan
 
 
+# облачные модели Ollama по порядку: быстрые и дешёвые первыми (бесплатный запас — на «стартовые»)
+CLOUD_MODELS = ["deepseek-v4.1-flash:cloud", "gpt-oss:120b-cloud", "glm-5.3-flash:cloud",
+                "nemotron-3-super:cloud", "gemma4:31b-cloud", "gpt-oss:20b-cloud"]
+CLOUD_TIMEOUT = 20      # облако молчит дольше — переходим на модель на компьютере
+
+RETELL = """Ты — {name}, голосовой помощник. Пользователь попросил: «{text}». Команда выполнена, \
+её вывод ниже. Ответь пользователю по-русски одной-двумя короткими фразами для озвучки: только суть, \
+без технических подробностей, кавычек и разметки. Если вывод пустой — скажи, что сделано."""
+
+
+def windows_context(windows: list[dict], limit: int = 12) -> str:
+    """Список открытых окон для модели — первым активное."""
+    if not windows:
+        return ""
+    lines = []
+    for w in windows[:limit]:
+        exe = w["exe"].removesuffix(".exe").removesuffix(".EXE")
+        lines.append(f"- {exe}: «{w['title'][:80]}»" + (" (активное)" if w.get("active") else ""))
+    return "Открытые окна:\n" + "\n".join(lines)
+
+
 class Brain:
     def __init__(self, config: dict, skills: list[Skill], client: Ollama | None = None):
         self.config = config
         self.client = client or Ollama(config.get("ollama_url", DEFAULT_URL))
+        self.cloud_error = ""         # почему облако не ответило в последний раз
         self.set_skills(skills)
 
     def set_skills(self, skills: list[Skill]) -> None:
         self.skills = skills
-        name = self.config.get("wake_word", "рэм").capitalize()
+        self.name = name = self.config.get("wake_word", "рэм").capitalize()
         self.mode = self.config.get("brain_mode", "tools")
         if self.mode == "tools":
             self.tools = build_tools(skills)
-            self.system = build_tools_prompt(name)
+            self.system = build_tools_prompt(name, skills)
         else:
             self.schema = build_schema(skills)
             self.system = build_system_prompt(skills, name)
         if self.config.get("rem_style"):
             self.system = rem_style(self.system)
 
-    def plan(self, text: str, cpu_only: bool = False) -> Plan:
+    def models(self, local: bool = True) -> list[tuple[str, bool]]:
+        """Очередь моделей: (имя, облачная ли) — сначала облако, если включено."""
+        cloud = (self.config.get("cloud_model") or "").strip()
+        out = [(cloud, True)] if cloud else []
+        return out + ([(self.config["model"], False)] if local else [])
+
+    def _call(self, model: str, cloud: bool, user: str, cpu_only: bool) -> dict:
+        kw = dict(keep_alive=f"{int(self.config.get('keep_alive_min', 3))}m", cpu_only=cpu_only and not cloud)
+        if self.mode == "tools":
+            return self.client.chat_tools(model, self.system, user, self.tools,
+                                          timeout=CLOUD_TIMEOUT if cloud else None, **kw)
+        return self.client.chat(model, self.system, user, self.schema, **kw)
+
+    def plan(self, text: str, cpu_only: bool = False, context: str = "", local: bool = True) -> Plan:
+        """context — список открытых окон; local=False — только облако (во время игры)."""
         t = time.perf_counter()
-        try:
-            kw = dict(keep_alive=f"{int(self.config.get('keep_alive_min', 3))}m", cpu_only=cpu_only)
-            if self.mode == "tools":
-                raw = self.client.chat_tools(self.config["model"], self.system, text, self.tools, **kw)
-            else:
-                raw = self.client.chat(self.config["model"], self.system, text, self.schema, **kw)
-            plan = validate(raw, self.skills)
-        except (OllamaError, json.JSONDecodeError, KeyError) as e:
-            plan = Plan(error=str(e))
+        user = f"{context}\n\nКоманда: {text}" if context else text
+        plan = Plan(error="модель не выбрана")
+        for model, cloud in self.models(local):
+            try:
+                plan = validate(self._call(model, cloud, user, cpu_only), self.skills)
+                plan.source = "cloud" if cloud else "llm"
+                break
+            except (OllamaError, json.JSONDecodeError, KeyError) as e:
+                plan = Plan(error=str(e))
+                if cloud:
+                    self.cloud_error = str(e)
+                    log.warning("облачная модель не ответила: %s", e)
         plan.seconds = time.perf_counter() - t
         return plan
+
+    def retell(self, text: str, output: str) -> str:
+        """Вывод команды → короткая фраза для озвучки. Не вышло — пустая строка."""
+        system = RETELL.format(name=self.name, text=text)
+        if self.config.get("rem_style"):
+            system += " О себе — только в третьем лице («Рэм»), к пользователю на «вы»."
+        for model, cloud in self.models():
+            try:
+                reply = self.client.ask(model, system, output or "(пусто)", CLOUD_TIMEOUT if cloud else None)
+                return " ".join(EMOJI.sub("", reply).split())
+            except OllamaError as e:
+                log.warning("пересказ вывода: %s", e)
+        return ""

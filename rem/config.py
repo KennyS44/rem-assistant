@@ -9,6 +9,7 @@ from pathlib import Path
 DEFAULTS: dict = {
     "wake_word": "рэм",
     "model": "qwen3:4b-instruct-2507-q4_K_M",
+    "cloud_model": "",            # облачная модель Ollama («…:cloud»); пусто — только модель на компьютере
     "ollama_url": "http://127.0.0.1:11434",
     "brain_mode": "tools",        # tools — родной вызов функций; schema — ответ по JSON-схеме
     "keep_alive_min": 3,          # сколько минут держать модель в видеопамяти после команды

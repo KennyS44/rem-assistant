@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import winapi
-from .brain import Brain, Ollama, Plan
+from .brain import Brain, Ollama, Plan, windows_context
 from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
@@ -44,6 +44,7 @@ class Assistant:
         self.status_cb: Callable[[str], None] = lambda s: None
         self.notify_cb: Callable[[str], None] = lambda s: None
         self._gpu_checked = False
+        self._cloud_warned = False
         self.journal = app_dir() / "actions.log"
         self.reload()
 
@@ -101,8 +102,9 @@ class Assistant:
             log.debug("выгрузка модели: %s", e)
 
     def prewarm(self) -> None:
-        """Загрузить модель, пока человек договаривает команду (после «голого» слова)."""
-        if self.game_mode:
+        """Загрузить модель, пока человек договаривает команду (после «голого» слова).
+        С облачной моделью видеокарту не занимаем: локальная нужна, только если облако не ответит."""
+        if self.game_mode or self.config.get("cloud_model"):
             return
 
         def go():
@@ -118,16 +120,39 @@ class Assistant:
         fast = self.fast.match(text)
         if fast:
             return fast
+        try:
+            context = windows_context(winapi.open_windows())
+        except Exception as e:
+            log.debug("список окон: %s", e)
+            context = ""
         if self.game_mode:
+            # облако видеокарту не трогает — во время игры им можно пользоваться как обычно
             mode = self.config.get("game_mode", "fast_only")
-            if mode == "fast_only":
+            plan = self.brain.plan(text, cpu_only=True, context=context, local=mode == "cpu")
+            self._warn_cloud(plan)
+            if plan.error and mode == "fast_only":
                 return Plan(reply="Во время игры я выполняю только простые команды.", source="game")
-            return self.brain.plan(text, cpu_only=True)
-        plan = self.brain.plan(text)
-        if not plan.error and not self._gpu_checked:
+            return plan
+        plan = self.brain.plan(text, context=context)
+        self._warn_cloud(plan)
+        if plan.source == "llm" and not plan.error and not self._gpu_checked:
             self._gpu_checked = True
             threading.Thread(target=self._check_gpu, daemon=True).start()
         return plan
+
+    def _warn_cloud(self, plan: Plan) -> None:
+        """Один раз за запуск: облако не ответило — говорим почему (дальше молча работаем локально)."""
+        err = self.brain.cloud_error
+        if not self.config.get("cloud_model") or plan.source == "cloud" or not err or self._cloud_warned:
+            return
+        self._cloud_warned = True
+        if "401" in err or "unauthorized" in err.lower():
+            why = "Ollama не вошла в аккаунт — нажмите «Подключить» в настройках."
+        elif "недоступна" in err:
+            why = "нет связи с облаком Ollama."
+        else:
+            why = "облако ответило ошибкой (возможно, закончился бесплатный лимит). Подробности в rem.log."
+        self.notify_cb("Облачная модель не ответила, работаю на модели на компьютере: " + why)
 
     def _check_gpu(self) -> None:
         """Один раз: модель на видеокарте? Если нет — чаще всего старый драйвер NVIDIA."""
@@ -163,12 +188,17 @@ class Assistant:
             if dry_run:
                 results.append((name, args, "пропущено (проверка)"))
                 continue
-            if s.confirm and not self._confirm(s.title):
+            if s.name == "run_command":
+                self.notify_cb("Команда: " + args.get("command", ""))
+            question = args.get("description") or s.title if s.name == "run_command" else s.title
+            if s.confirm and not self._confirm(question[:1].upper() + question[1:]):
                 replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))
                 continue
             try:
                 out = s.handler(self.ctx, **args)
+                if s.retell:
+                    out = self.brain.retell(text, out or "") or self.phrase("Готово.", "Рэм всё сделала.")
                 if out:
                     replies.append(out)
                 results.append((name, args, "ок"))

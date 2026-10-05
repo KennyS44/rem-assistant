@@ -339,6 +339,8 @@ def selftest(report: str | None = None) -> int:
     check("слово активации", find_wake("Рэм, открой браузер.", "рэм") == (True, "открой браузер"))
     check("ложное слово отсеяно", find_wake("Тремя друзьями", "рэм")[0] is False)
     check("звуки генерируются", len(_tone_wav([(440, 0.1)])) > 1000)
+    from .voiceclips import clip, phrases
+    check("готовые фразы голосом Рем на месте", all(clip(t) for t in phrases()))
     import numpy as np
     from .echo import to_mono_16k
     from .speech import sapi_params

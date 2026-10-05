@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Значок Рэм «по мотивам»: голубая стрижка-каре, кружевная повязка горничной, цветок-заколка.
+       Собственный упрощённый рисунок, не арт персонажа. Исходник для rem.ico и rem/art/*.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eaf3fe"/><stop offset="1" stop-color="#c3dcf7"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fb2f0"/><stop offset="1" stop-color="#3f73c4"/>
+    </linearGradient>
+    <clipPath id="disc"><circle cx="128" cy="128" r="122"/></clipPath>
+  </defs>
+  <circle cx="128" cy="128" r="122" fill="url(#bg)"/>
+  <g clip-path="url(#disc)">
+    <!-- волосы сзади и плечи -->
+    <path d="M40 150 Q36 62 128 56 Q220 62 216 150 Q220 192 210 206 Q198 216 186 206 L70 206 Q58 216 46 206 Q36 192 40 150 Z" fill="url(#hair)"/>
+    <path d="M60 256 Q66 214 128 210 Q190 214 196 256 Z" fill="#26375e"/>
+    <path d="M104 214 L128 238 L152 214 Z" fill="#ffffff"/>
+    <!-- лицо -->
+    <ellipse cx="128" cy="150" rx="60" ry="56" fill="#fdebe1"/>
+    <!-- чёлка -->
+    <path d="M62 150 Q60 84 128 80 Q196 84 194 150 Q184 120 170 104 Q166 128 150 136 Q154 116 146 102
+             Q132 126 106 132 Q118 116 116 102 Q100 122 82 128 Q90 112 88 104 Q72 122 62 150 Z" fill="url(#hair)"/>
+    <!-- глаза-дуги и румянец -->
+    <path d="M96 162 Q106 172 116 162" fill="none" stroke="#26375e" stroke-width="5" stroke-linecap="round"/>
+    <path d="M140 162 Q150 172 160 162" fill="none" stroke="#26375e" stroke-width="5" stroke-linecap="round"/>
+    <ellipse cx="96" cy="180" rx="10" ry="6" fill="#f6b8c6" opacity="0.8"/>
+    <ellipse cx="160" cy="180" rx="10" ry="6" fill="#f6b8c6" opacity="0.8"/>
+    <path d="M122 186 Q128 190 134 186" fill="none" stroke="#c9837a" stroke-width="3" stroke-linecap="round"/>
+    <!-- повязка горничной -->
+    <path d="M58 86 Q128 34 198 86 L190 98 Q128 54 66 98 Z" fill="#ffffff"/>
+    <g fill="#ffffff">
+      <circle cx="62" cy="86" r="10"/><circle cx="80" cy="70" r="10"/><circle cx="102" cy="60" r="10"/>
+      <circle cx="128" cy="56" r="10"/><circle cx="154" cy="60" r="10"/><circle cx="176" cy="70" r="10"/>
+      <circle cx="194" cy="86" r="10"/>
+    </g>
+    <path d="M70 92 Q128 50 186 92" fill="none" stroke="#26375e" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <!-- цветок-заколка -->
+  <g transform="translate(182 120)">
+    <g fill="#ffffff" stroke="#b9cfe9" stroke-width="2">
+      <circle cx="0" cy="-12" r="9"/><circle cx="11" cy="-4" r="9"/><circle cx="7" cy="10" r="9"/>
+      <circle cx="-7" cy="10" r="9"/><circle cx="-11" cy="-4" r="9"/>
+    </g>
+    <circle r="6" fill="#f2a7bf"/>
+  </g>
+  <circle cx="128" cy="128" r="120" fill="none" stroke="#3f73c4" stroke-width="5"/>
+</svg>

@@ -46,6 +46,24 @@ jobs:
           if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
           if ($p.ExitCode -ne 0) { throw "Самопроверка Rem.exe не прошла (код $($p.ExitCode))" }
 
+      - name: Оформление в собранном Rem.exe
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $p = Start-Process -FilePath dist\Rem\Rem.exe -ArgumentList "--look-test","look","--report","look.txt" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "Rem.exe не ответил за 2 минуты" }
+          if (Test-Path look.txt) { Get-Content look.txt }
+          $crash = Join-Path $env:APPDATA "Rem\crash.txt"
+          if (Test-Path $crash) { Write-Host "=== crash.txt ==="; Get-Content $crash }
+          if ($p.ExitCode -ne 0) { throw "Проверка оформления не прошла (код $($p.ExitCode))" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: look-screenshots
+          path: look/
+          if-no-files-found: ignore
+
       - name: Кэш моделей речи
         uses: actions/cache@v4
         with:

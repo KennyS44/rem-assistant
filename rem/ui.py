@@ -11,22 +11,17 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageTk
 
-from . import __version__, autostart, config as cfgmod
+from . import __version__, autostart, config as cfgmod, look
 from .skills import REGISTRY
 
-STATE_COLORS = {
-    "idle": "#4f7dd9", "listening": "#2fb36e", "thinking": "#e0a72e",
-    "paused": "#8a8f98", "game": "#9b6bd6", "error": "#d9534f",
-}
 STATE_TEXT = {
     "idle": "слушаю", "listening": "слышу команду", "thinking": "выполняю",
     "paused": "на паузе", "game": "игровой режим", "error": "ошибка",
 }
 
 PAD = 8
-FONT = ("Segoe UI", 10)
 FONT_TITLE = ("Segoe UI Semibold", 12)
 
 
@@ -40,28 +35,58 @@ def uninstaller():
     return p if p.exists() else None
 
 
-def tray_image(state: str) -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, 60, 60), fill=STATE_COLORS.get(state, "#4f7dd9"))
-    d.ellipse((24, 24, 40, 40), fill="white")
-    return img
-
-
 class UI:
     def __init__(self, app):
         self.app = app                          # rem.__main__.App
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("Рэм")
-        style = ttk.Style(self.root)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        self.root.option_add("*Font", FONT)
         self.calls: queue.Queue = queue.Queue()
         self.icon = None
         self.settings_win = None
+        self.card = None
+        self.card_status = False                # в карточке «Слушаю…», а не ответ
+        self.apply_look()
         self.root.after(50, self._pump)
+
+    # ——— внешний вид ———
+
+    def apply_look(self) -> None:
+        """Тема окон и лицо Рэм (своя картинка или значок) — в окнах, трее и карточке."""
+        look.apply_theme(self.root, self.app.config.get("rem_theme", True))
+        self.face = look.face()
+        self.photos = {n: ImageTk.PhotoImage(self.face.resize((n, n), Image.LANCZOS), master=self.root)
+                       for n in (32, 48, 64)}
+        self.root.iconphoto(True, self.photos[64], self.photos[32])
+        if self.card:
+            self.card.set_photo(self.photos[48])
+        if self.icon:
+            self.set_state(self.app.state)
+
+    def show_reply(self, text: str) -> None:
+        if not text or not self.app.config.get("reply_card", True):
+            return
+        self._card().show(text, look.card_seconds(text))
+        self.card_status = False
+
+    def _card(self) -> look.Card:
+        if self.card is None:
+            self.card = look.Card(self.root, self.photos[48])
+        return self.card
+
+    def _card_state(self, state: str) -> None:
+        """Карточка показывает, что Рэм услышала, пока она слушает и думает."""
+        if not self.app.config.get("reply_card", True):
+            return
+        if state in ("listening", "thinking"):
+            if state == "thinking" and not (self.card and self.card.visible() and self.card_status):
+                return                          # команда текстом или таймер — без «Думаю…»
+            text = {"listening": "Слушаю…", "thinking": "Думаю…"}[state]
+            if self._card().show(text):
+                self.card_status = True
+        elif self.card and self.card_status:
+            self.card.hide()
+            self.card_status = False
 
     # ——— межпоточные вызовы ———
 
@@ -97,12 +122,13 @@ class UI:
             m("Удалить Рэм…", lambda: self.call(self.uninstall), visible=uninstaller() is not None),
             m("Выход", lambda: self.call(self.app.quit)),
         )
-        self.icon = pystray.Icon("Rem", tray_image("idle"), "Рэм", menu)
+        self.icon = pystray.Icon("Rem", look.tray_image("idle", self.face), "Рэм", menu)
         self.icon.run_detached()
 
     def set_state(self, state: str) -> None:
+        self._card_state(state)
         if self.icon:
-            self.icon.icon = tray_image(state)
+            self.icon.icon = look.tray_image(state, self.face)
             self.icon.title = f"Рэм — {STATE_TEXT.get(state, '')}"
             self.icon.update_menu()
 
@@ -247,17 +273,92 @@ class SettingsWindow:
         ui.settings_win = w
         w.title("Рэм — настройки")
         w.minsize(560, 520)
+        self._header(w)
         nb = ttk.Notebook(w)
         nb.pack(fill="both", expand=True, padx=PAD, pady=PAD)
         nb.add(self._general(nb), text="Основное")
         nb.add(self._voice_tab(nb), text="Голос и звук")
+        nb.add(self._look_tab(nb), text="Оформление")
         nb.add(self._skills(nb), text="Умения")
         nb.add(self._custom_tab(nb), text="Мои умения")
         nb.add(self._try_tab(nb), text="Проверка")
         bar = ttk.Frame(w, padding=(PAD, 0, PAD, PAD))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Сохранить", command=self.save).pack(side="right")
+        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.save).pack(side="right")
         ttk.Button(bar, text="Отмена", command=w.destroy).pack(side="right", padx=PAD)
+
+    def _header(self, w):
+        """Шапка: лицо Рэм, имя, состояние и версия."""
+        h = ttk.Frame(w, padding=(16, 12, 16, 0))
+        h.pack(fill="x")
+        ttk.Label(h, image=self.ui.photos[48]).pack(side="left")
+        t = ttk.Frame(h)
+        t.pack(side="left", padx=(12, 0))
+        ttk.Label(t, text="Рэм", font=FONT_TITLE).pack(anchor="w")
+        ttk.Label(t, text=f"{STATE_TEXT.get(self.app.state, '')} · версия {__version__}",
+                  foreground="#666").pack(anchor="w")
+
+    # вкладка «Оформление»
+    def _look_tab(self, nb):
+        f = ttk.Frame(nb, padding=16)
+        self.new_avatar = None                  # None — без изменений, "" — вернуть значок, иначе картинка
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        self.avatar_lbl = ttk.Label(top)
+        self.avatar_lbl.pack(side="left", anchor="n")
+        side = ttk.Frame(top)
+        side.pack(side="left", fill="x", expand=True, padx=(16, 0))
+        ttk.Label(side, text="Картинка Рэм", font=FONT_TITLE).pack(anchor="w")
+        ttk.Label(side, wraplength=360, justify="left", foreground="#666",
+                  text="Видна в трее, в окнах и в карточке ответа. Можно поставить любую картинку "
+                       "со своего компьютера — например, лицо Рем. Она остаётся только у вас "
+                       "и никуда не отправляется.").pack(anchor="w", pady=(4, PAD))
+        b = ttk.Frame(side)
+        b.pack(anchor="w")
+        ttk.Button(b, text="Выбрать картинку…", command=self._pick_avatar).pack(side="left")
+        self.reset_btn = ttk.Button(b, text="Вернуть значок Рэм", command=self._reset_avatar)
+        self.reset_btn.pack(side="left", padx=PAD)
+
+        def show(img):
+            self._avatar_photo = ImageTk.PhotoImage(img.resize((96, 96), Image.LANCZOS), master=self.win)
+            self.avatar_lbl.configure(image=self._avatar_photo)
+        self._show_avatar = show
+        show(self.ui.face)
+        self.reset_btn.state(["!disabled" if look.has_avatar() else "disabled"])
+
+        ttk.Separator(f).pack(fill="x", pady=16)
+        self.theme = tk.BooleanVar(value=self.cfg.get("rem_theme", True))
+        ttk.Checkbutton(f, text="Голубая тема окон в стиле Рем", variable=self.theme).pack(anchor="w")
+        ttk.Label(f, text="Выключите, чтобы окна выглядели как обычные окна Windows.",
+                  foreground="#666").pack(anchor="w", padx=(24, 0), pady=(0, PAD))
+        self.card_on = tk.BooleanVar(value=self.cfg.get("reply_card", True))
+        ttk.Checkbutton(f, text="Показывать ответы карточкой у края экрана", variable=self.card_on).pack(anchor="w")
+        ttk.Label(f, wraplength=440, justify="left", foreground="#666",
+                  text="Небольшое окошко справа внизу: «Слушаю…», затем ответ Рэм текстом. Не забирает "
+                       "фокус и не появляется поверх полноэкранных игр и видео.").pack(
+            anchor="w", padx=(24, 0))
+        ttk.Button(f, text="Показать пример", command=lambda: self.ui._card().show(
+            "Рэм слушает. Таймер на 5 минут поставлен.", 4)).pack(anchor="w", padx=(24, 0), pady=(PAD, 0))
+        return f
+
+    def _pick_avatar(self) -> None:
+        p = filedialog.askopenfilename(parent=self.win, title="Картинка для Рэм", filetypes=[
+            ("Картинки", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"), ("Все файлы", "*.*")])
+        if not p:
+            return
+        try:
+            img = look.make_avatar(p)
+        except Exception as e:
+            messagebox.showwarning("Рэм", f"Эту картинку не получилось открыть:\n{e}", parent=self.win)
+            return
+        self.new_avatar = p
+        self._show_avatar(img)
+        self.reset_btn.state(["!disabled"])
+
+    def _reset_avatar(self) -> None:
+        self.new_avatar = ""
+        self._show_avatar(Image.open(look.ART / "icon.png"))
+        self.reset_btn.state(["disabled"])
 
     # вкладка «Основное»
     def _general(self, nb):
@@ -784,7 +885,18 @@ class SettingsWindow:
         c["confirm_overrides"] = {n: ask.get() for n, (_, ask, default) in self.skill_vars.items()
                                   if ask.get() != default}
         c["custom_skills"] = self.custom
+        c["rem_theme"] = bool(self.theme.get())
+        c["reply_card"] = bool(self.card_on.get())
         cfgmod.save(c)
+        if self.new_avatar == "":
+            look.clear_avatar()
+        elif self.new_avatar:
+            try:
+                look.set_avatar(self.new_avatar)
+            except Exception as e:
+                self.app.log.warning("картинка не сохранилась: %s", e)
+        if self.new_avatar is not None or old.get("rem_theme", True) != c["rem_theme"]:
+            self.ui.apply_look()
         try:
             autostart.set_enabled(bool(self.auto.get()))
         except OSError:

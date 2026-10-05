@@ -68,6 +68,12 @@ class App:
         self.assistant = Assistant(self.config, self.voice, self.sounds)
         self.assistant.status_cb = lambda s: self.ui.call(self._set_state, s)
         self.assistant.notify_cb = lambda text: self.ui.call(self.ui.notify, text)
+        say = self.assistant.say
+
+        def say_and_show(text: str) -> None:          # ответ ещё и текстом — в карточке
+            self.ui.call(self.ui.show_reply, text)
+            say(text)
+        self.assistant.say = say_and_show
         threading.Thread(target=self._boot, name="boot", daemon=True).start()
         self.ui.root.mainloop()
         return 0
@@ -525,6 +531,7 @@ def main() -> int:
     ap.add_argument("--speech-test", nargs="+", metavar="WAV", help="проверка распознавания на записях")
     ap.add_argument("--check-ollama", action="store_true", help="запустить Ollama, если не запущена")
     ap.add_argument("--voice-test", action="store_true", help="проверка нейроголоса (скачает его)")
+    ap.add_argument("--look-test", metavar="ПАПКА", nargs="?", const="", help="проверка оформления, снимки окон")
     ap.add_argument("--console", action="store_true", help="писать журнал в консоль")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args()
@@ -534,6 +541,9 @@ def main() -> int:
         return speech_test(a.speech_test, a.report)
     if a.voice_test:
         return voice_test(a.report)
+    if a.look_test is not None:
+        from .look import look_test
+        return look_test(a.report, a.look_test or None)
     if a.check_ollama:
         from .brain import Ollama
         ok = Ollama(cfgmod.load().get("ollama_url", "http://127.0.0.1:11434")).start_local()

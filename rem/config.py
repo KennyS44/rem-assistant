@@ -28,6 +28,8 @@ DEFAULTS: dict = {
     "mic_device": None,           # имя микрофона; None — вход Windows по умолчанию
     "ignore_speakers": True,      # не реагировать на «Рэм» из колонок (фильмы, видео)
     "auto_update": True,          # проверять и скачивать обновления
+    "rem_theme": True,            # голубая тема окон; False — обычный вид Windows
+    "reply_card": True,           # «Слушаю…» и ответ карточкой у края экрана
     "disabled_skills": [],
     "confirm_overrides": {},
     "custom_skills": [],

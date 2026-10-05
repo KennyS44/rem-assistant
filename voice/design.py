@@ -88,7 +88,8 @@ def vox_samples(out: Path) -> None:
     for v, desc in VARIANTS.items():
         for seed in (1, 2):
             t = time.time()
-            wav = m.generate(text=f"({desc}){REF_TEXT}", cfg_value=2.0, inference_timesteps=10, seed=seed)
+            torch.manual_seed(seed)                 # у pip-версии voxcpm нет параметра seed
+            wav = m.generate(text=f"({desc}){REF_TEXT}", cfg_value=2.0, inference_timesteps=10)
             sr = m.tts_model.sample_rate
             sf.write(out / f"vox-{v}{seed}.wav", trim(np.asarray(wav), sr), sr, subtype="PCM_16")
             print(f"vox-{v}{seed}: {len(wav) / sr:.1f} с звука за {time.time() - t:.0f} с", flush=True)

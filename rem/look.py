@@ -269,7 +269,7 @@ class Card:
             w.attributes("-alpha", self.alpha)
             w.deiconify()
             self._no_activate(prev)
-        self._fade(0.97)
+        self._fade(1.0)
         if self._timer:
             self.root.after_cancel(self._timer)
             self._timer = None

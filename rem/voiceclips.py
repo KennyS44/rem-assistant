@@ -25,7 +25,7 @@ def phrases() -> list[str]:
         label = duration_ru(m * 60)
         out += [f"Таймер на {label}.", f"{elapsed_ru(m * 60)} — таймер закончился."]
     for s in sorted(REGISTRY.values(), key=lambda s: s.name):
-        if s.confirm:
+        if s.confirm and not s.retell:           # «любая команда» спрашивает своими словами — их не записать
             out.append(f"{s.title}? Скажите «да» или «нет».")
     return out
 

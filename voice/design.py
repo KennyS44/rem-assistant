@@ -6,6 +6,8 @@
 
     python voice/design.py samples out/            — по 2 образца каждого варианта описания
     python voice/design.py samples out/ --engine vox   — то же моделью VoxCPM2 (Apache 2.0)
+    python voice/design.py round2 out/             — голос № 10 (voice/ref/rem10.wav): клон этого
+          синтетического образца с разной разметкой ударений и короткими паузами
     python voice/design.py pack out/ --variant b --seed 2
         — образец выбранного голоса → клон этого образца (модель Base) → все фразы
           из rem.voiceclips.phrases() в out/clips/<ключ>.wav
@@ -54,6 +56,74 @@ def spoken(text: str) -> str:
     return re.sub(r"\b\d+\b", lambda m: WORDS[m.group()], text)
 
 
+TEST_TEXT = ("Рэм слушает. Скажите, что нужно сделать, и Рэм всё сделает. Простите, Рэм не расслышала. "
+             "Таймер на сорок пять минут закончился. Выключить компьютер? Скажите «да» или «нет».")
+FLUENT = VARIANTS["e"].replace("calm pace", "natural fluent pace without long pauses") + \
+    " Native Russian pronunciation with correct word stress."
+VOWELS = "аеёиоуыэюяАЕЁИОУЫЭЮЯ"
+
+
+def stressed(text: str, mode: str, acc) -> str:
+    """Ударения от ruaccent («скаж+ите»): plain — без них, acute — знак ударения над гласной,
+    upper — ударная гласная заглавной, plus — как есть."""
+    if mode == "plain":
+        return text
+    t = acc.process_all(text)
+    if mode == "plus":
+        return t
+    if mode == "acute":
+        return re.sub(rf"\+([{VOWELS}])", "\\1\u0301", t)
+    return re.sub(rf"\+([{VOWELS}])", lambda m: m.group(1).upper(), t)
+
+
+def short_pauses(wav: np.ndarray, sr: int, cap: float = 0.28) -> np.ndarray:
+    """Паузы длиннее cap секунд укорачиваем до cap."""
+    n = int(sr * 0.02)
+    env = np.convolve(np.abs(wav), np.ones(n) / n, "same")
+    quiet = env < 0.015
+    out, i, keep = [], 0, int(cap * sr)
+    while i < len(wav):
+        j = i
+        while j < len(wav) and quiet[j] == quiet[i]:
+            j += 1
+        seg = wav[i:j]
+        if quiet[i] and len(seg) > keep:
+            seg = np.concatenate([seg[:keep // 2], seg[-(keep // 2):]])
+        out.append(seg)
+        i = j
+    return np.concatenate(out)
+
+
+def round2(out: Path) -> None:
+    from ruaccent import RUAccent
+    acc = RUAccent()
+    acc.load(omograph_model_size="turbo3.1", use_dictionary=True)
+    ref = str(Path(__file__).parent / "ref" / "rem10.wav")
+
+    def save(name, wav, sr):
+        sf.write(out / f"{name}.wav", short_pauses(trim(np.asarray(wav), sr), sr), sr, subtype="PCM_16")
+        print(name, flush=True)
+
+    w, sr = sf.read(ref)
+    save("r0-original", w, sr)                              # № 10 как был, только паузы короче
+    for size, modes in (("1.7B", ("plain", "acute", "upper", "plus")), ("0.6B", ("plain", "acute"))):
+        m = load(f"Qwen3-TTS-12Hz-{size}-Base")
+        prompt = m.create_voice_clone_prompt(ref_audio=ref, ref_text=REF_TEXT)
+        for mode in modes:
+            torch.manual_seed(1)
+            wavs, sr = m.generate_voice_clone(text=stressed(TEST_TEXT, mode, acc), language="Russian",
+                                              voice_clone_prompt=prompt)
+            save(f"r-clone{size}-{mode}", wavs[0], sr)
+        del m
+    dm = load("Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+    for seed in (1, 2):
+        for mode in ("plain", "acute"):
+            torch.manual_seed(seed)
+            wavs, sr = dm.generate_voice_design(text=stressed(TEST_TEXT, mode, acc), language="Russian",
+                                                instruct=FLUENT)
+            save(f"r-fluent{seed}-{mode}", wavs[0], sr)
+
+
 def trim(wav: np.ndarray, sr: int) -> np.ndarray:
     """Тишина по краям — 50 мс."""
     loud = np.flatnonzero(np.abs(wav) > 0.01)
@@ -97,7 +167,7 @@ def vox_samples(out: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["samples", "pack"])
+    ap.add_argument("mode", choices=["samples", "round2", "pack"])
     ap.add_argument("out", type=Path)
     ap.add_argument("--variant", default="a", choices=list(VARIANTS))
     ap.add_argument("--seed", type=int, default=1)
@@ -107,6 +177,9 @@ def main() -> int:
     torch.set_num_threads(4)
     if a.engine == "vox":
         vox_samples(a.out)
+        return 0
+    if a.mode == "round2":
+        round2(a.out)
         return 0
     dm = load("Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     if a.mode == "samples":

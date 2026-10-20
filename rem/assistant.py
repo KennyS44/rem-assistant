@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import winapi
-from .brain import Brain, Ollama, Plan, windows_context
+from .brain import CLICK_HINT, Brain, Ollama, Plan, windows_context
 from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
 from .skills.base import Cancelled, NotHere
+from .skills import screen
 from .skills.apps import AppIndex
 from .skills.system import MONTHS, WEEKDAYS
 from .timers import Timers
@@ -152,6 +153,13 @@ class Assistant:
             parts.append(windows_context(winapi.open_windows()))
         except Exception as e:
             log.debug("список окон: %s", e)
+        if "click_button" in self.by_name:
+            try:
+                dialog = screen.active_dialog(self.ctx)          # «подтверди» — видно, что за «Да»
+                if dialog:
+                    parts.append(dialog + "\n" + CLICK_HINT)
+            except Exception as e:
+                log.debug("активное окно: %s", e)
         fresh = [r for r in self.recent if time.monotonic() - r[0] < RECENT_S]
         if fresh:
             lines = []

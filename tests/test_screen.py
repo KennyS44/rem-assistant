@@ -78,12 +78,24 @@ def test_fast_path_click():
     assert fp.match("нажми сохранить и закрой блокнот") is None          # две просьбы — модели
 
 
+def test_active_dialog_in_context(monkeypatch):
+    from rem import winapi
+    monkeypatch.setattr(winapi, "foreground_window", lambda: {"hwnd": 1, "pid": 1, "title": "Удаление файла", "exe": "explorer.exe"})
+    monkeypatch.setattr(uia, "controls", lambda hwnds, timeout=8: [Control("Переместить в корзину?", "текст"),
+                                                                   Control("Да", "кнопка"), Control("Нет", "кнопка")])
+    text = screen.active_dialog(None)
+    assert text.startswith("Активное окно «Удаление файла» (explorer):") and "кнопка: «Да», «Нет»" in text
+    monkeypatch.setattr(uia, "controls", lambda hwnds, timeout=8: [Control(f"Ссылка {i}", "ссылка") for i in range(30)])
+    assert screen.active_dialog(None) == ""                  # большое окно — только по look_at_window
+
+
 class FakeScreen:
     """Блокнот: «закрыть» → диалог сохранения → «Не сохранять» → окна нет."""
     def __init__(self, monkeypatch):
         self.state, self.pressed = "dialog", []
         monkeypatch.setattr(screen, "_target", lambda ctx, window="": ({"title": "Блокнот", "exe": "notepad.exe"}, [1]))
-        monkeypatch.setattr(uia, "controls", lambda hwnds: SAVE_DIALOG if self.state == "dialog" else [])
+        monkeypatch.setattr(uia, "controls", lambda hwnds, timeout=8: SAVE_DIALOG if self.state == "dialog" else [])
+        monkeypatch.setattr(screen, "active_dialog", lambda ctx: "")
         monkeypatch.setattr(uia, "find_and_press", self.press)
 
     def press(self, hwnds, spoken, ask=None):
@@ -124,7 +136,8 @@ def test_model_sees_window_after_click_and_stops(tmp_path, monkeypatch):
     looked, after = client.seen[1][1][-1]["content"], client.seen[2][1][-1]["content"]
     assert "«Не сохранять»" in looked                       # модель видела кнопки
     assert after.startswith("Теперь Окно «Блокнот»") and "кнопок не видно" in after
-    assert client.seen[2][1][1]["content"] == looked[:60]  # прошлый снимок окна укорочен
+    assert client.seen[2][1][-1]["content"] != looked and len(client.seen[2][1]) == 2   # прошлый снимок не повторяем
+    assert "Уже сделано:\n- look_at_window() → Окно «Блокнот» (notepad):" in client.seen[2][0]
     assert said == ["Блокнот закрыт без сохранения."]
 
 
@@ -140,7 +153,7 @@ def test_model_retries_missing_button(tmp_path, monkeypatch):
 
 def test_dangerous_button_needs_yes(tmp_path, monkeypatch):
     fs = FakeScreen(monkeypatch)
-    monkeypatch.setattr(uia, "controls", lambda hwnds: [Control("Удалить", "кнопка")])
+    monkeypatch.setattr(uia, "controls", lambda hwnds, timeout=8: [Control("Удалить", "кнопка")])
     client = Steps({"actions": [{"skill": "click_button", "args": {"name": "Удалить"}}], "reply": ""})
     a = _assistant(client, tmp_path)
     asked = []
@@ -195,7 +208,7 @@ def test_describe_shows_state():
 def test_same_click_twice_stops(tmp_path, monkeypatch):
     """Окно не меняется, а модель жмёт одно и то же — останавливаемся, а не жмём 8 раз."""
     fs = FakeScreen(monkeypatch)
-    monkeypatch.setattr(uia, "controls", lambda hwnds: [Control("Принимаю", "переключатель", on=True)])
+    monkeypatch.setattr(uia, "controls", lambda hwnds, timeout=8: [Control("Принимаю", "переключатель", on=True)])
     fs.press = lambda hwnds, spoken, ask=None: (fs.pressed.append(spoken), ("pressed", spoken))[1]
     monkeypatch.setattr(uia, "find_and_press", fs.press)
     client = Steps({"actions": [{"skill": "click_button", "args": {"name": "Принимаю"}}], "reply": ""})

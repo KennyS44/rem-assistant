@@ -37,7 +37,7 @@ class Plan:
     error: str = ""
     model: str = ""               # какая модель ответила — продолжение идёт к ней же
     user: str = ""                # что ушло модели (команда со справкой)
-    history: list = field(default_factory=list)   # шаги после команды: вызовы и их результаты
+    steps: list = field(default_factory=list)     # прошлые шаги задачи — по строчке: что вызвано и итог
 
 
 class OllamaError(RuntimeError):
@@ -287,13 +287,12 @@ WINDOWS_RULE = """
 «его», «ещё», «нет, другое» и выбирай окно для switch_window и close_app.
 7. Получив результат функции, реши: нужно ещё действие — вызови; всё готово — ответь \
 по сути результата одной-двумя фразами."""
-
-CLICK_RULE = """
-8. Задача в окне в несколько нажатий: look_at_window, потом click_button по одной кнопке, как она \
-названа в окне. После нажатия увидишь окно заново; цель достигнута — ответь коротко."""
-
-CLICK_EXAMPLE = """
-«закрой блокнот без сохранения» → close_app(name="блокнот"), затем по окну click_button(name=…)"""
+# подсказка про кнопки — не в системном промпте (там она сбивает 4B на обычных командах),
+# а в команде: когда открыт диалог или задача в окне уже идёт
+CLICK_HINT = ("Кнопки, флажки и вкладки окна нажимай click_button по одной, точно как они названы в окне "
+              "(флажок снимается и ставится нажатием); после нажатия увидишь окно заново. "
+              "Цель достигнута — ответь коротко, без вызовов.")
+WINDOW_SKILLS = {"click_button", "look_at_window"}
 
 
 def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) -> str:
@@ -301,7 +300,7 @@ def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) 
     rule2 = SHELL_RULE if "run_command" in have else \
         "2. Если просят сделать то, для чего функции нет, — ничего не вызывай и коротко скажи, что этого пока не умеешь."
     examples = TOOL_EXAMPLES + (SHELL_EXAMPLE if "run_command" in have else "") + \
-        (FILES_EXAMPLE if "find_files" in have else "") + (CLICK_EXAMPLE if "click_button" in have else "")
+        (FILES_EXAMPLE if "find_files" in have else "")
     return f"""Ты — {name}, голосовой помощник на компьютере с Windows. Команда распознана из речи, \
 в ней бывают ошибки — угадывай смысл.
 
@@ -312,7 +311,7 @@ def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) 
 4. На вопросы и болтовню отвечай текстом по-русски, коротко — одной-тремя фразами, без списков \
 и разметки. Можно переводить, считать, объяснять. Нет уверенности в факте — так и скажи и предложи поискать. Время и дату не выдумывай: \
 на «который час» и «какое число» вызывай tell_time и tell_date.
-5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}{CLICK_RULE if "click_button" in have else ""}
+5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}
 
 Примеры:
 {examples}"""
@@ -447,15 +446,24 @@ RETELL = """Ты — {name}, голосовой помощник. Пользов
 без технических подробностей, кавычек и разметки. Если вывод пустой — скажи, что сделано."""
 
 
-def windows_context(windows: list[dict], limit: int = 12) -> str:
+def windows_context(windows: list[dict], limit: int = 8) -> str:
     """Список открытых окон для модели — первым активное."""
     if not windows:
         return ""
     lines = []
     for w in windows[:limit]:
         exe = w["exe"].removesuffix(".exe").removesuffix(".EXE")
-        lines.append(f"- {exe}: «{w['title'][:80]}»" + (" (активное)" if w.get("active") else ""))
+        lines.append(f"- {exe}: «{w['title'][:60]}»" + (" (активное)" if w.get("active") else ""))
     return "Открытые окна:\n" + "\n".join(lines)
+
+
+def step_line(name: str, args: dict, out: str) -> str:
+    """Шаг задачи одной строчкой: «- click_button(name='Далее >') → готово». Снимок окна после
+    нажатия («Теперь Окно…») устарел — от него остаётся «готово»."""
+    first = (out or "").strip().splitlines()[0] if (out or "").strip() else ""
+    if not first or first.startswith("Теперь "):
+        first = "готово"
+    return f"- {name}({', '.join(f'{k}={v!r}' for k, v in args.items())}) → {first[:70]}"
 
 
 class Brain:
@@ -498,7 +506,14 @@ class Brain:
         plan = Plan(error="модель не выбрана")
         for model, cloud in self.models(local):
             try:
-                plan = validate(self._call(model, cloud, user, cpu_only), self.skills)
+                raw = self._call(model, cloud, user, cpu_only)
+                plan = validate(raw, self.skills)
+                if self.mode == "tools" and not plan.actions and not plan.reply and raw.get("reply"):
+                    # «Звук выключен» без вызова — один раз просим вызвать (на 4B бывает)
+                    raw = self._call(model, cloud, user, cpu_only, [
+                        {"role": "assistant", "content": raw["reply"]},
+                        {"role": "user", "content": "Функция не вызвана. Вызови функцию для этой команды."}])
+                    plan = validate(raw, self.skills)
                 plan.source, plan.model, plan.user = "cloud" if cloud else "llm", model, user
                 break
             except (OllamaError, json.JSONDecodeError, KeyError) as e:
@@ -515,20 +530,24 @@ class Brain:
         продолжений не умеет."""
         if self.mode != "tools" or not plan.model:
             return None
-        # прошлые снимки окна устарели — короче, чтобы долгая задача влезла в окно модели
-        old = [{**m, "content": m["content"][:60]} if m.get("role") == "tool" else m for m in plan.history]
-        history = old + [
+        # окно модели — 4096 токенов (больше не влезет в 4 ГБ видеопамяти вместе с моделью): целиком
+        # модель видит только последний шаг, прошлые — строчкой в команде («нажато «Далее >»»)
+        history = [
             {"role": "assistant", "content": "",
              "tool_calls": [{"function": {"name": n, "arguments": a}} for n, a, _ in done]},
-            # окно модели — 4096 токенов (больше не влезет в 4 ГБ видеопамяти вместе с моделью)
             *({"role": "tool", "tool_name": n, "content": (out or "готово")[:1500]} for n, _, out in done)]
+        user = plan.user + ("\n\nУже сделано:\n" + "\n".join(plan.steps) if plan.steps else "")
+        in_window = any(n in WINDOW_SKILLS or "Окно «" in (out or "") for n, _, out in done)
+        if in_window and CLICK_HINT not in user:
+            user += "\n\n" + CLICK_HINT
         cloud = plan.source == "cloud"
         t = time.perf_counter()
         try:
-            nxt = validate(self._call(plan.model, cloud, plan.user, cpu_only, history), self.skills, acted=True)
+            nxt = validate(self._call(plan.model, cloud, user, cpu_only, history), self.skills, acted=True)
         except (OllamaError, json.JSONDecodeError, KeyError) as e:
             nxt = Plan(error=str(e))
-        nxt.source, nxt.model, nxt.user, nxt.history = plan.source, plan.model, plan.user, history
+        nxt.source, nxt.model, nxt.user = plan.source, plan.model, plan.user
+        nxt.steps = plan.steps + [step_line(n, a, out) for n, a, out in done]
         nxt.seconds = time.perf_counter() - t
         return nxt
 

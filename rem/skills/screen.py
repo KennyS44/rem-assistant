@@ -36,6 +36,18 @@ def look(ctx, window: str = "") -> str:
     return uia.describe(w["title"], w["exe"], uia.controls(hwnds))
 
 
+def active_dialog(ctx, max_buttons: int = 12) -> str:
+    """Кнопки активного окна, если это небольшое окно (диалог, мастер установки): модель сразу
+    видит, что значит «подтверди» или «согласись». Большие окна (браузер, Word) — только по look_at_window."""
+    w = winapi.foreground_window()
+    if not w:
+        return ""
+    found = uia.controls([w["hwnd"]], timeout=1.5)
+    if not found or sum(c.kind != "текст" for c in found) > max_buttons:
+        return ""
+    return "Активное о" + uia.describe(w["title"], w["exe"], found, limit=400)[1:]    # «Окно…» → «Активное окно…»
+
+
 def after_click(ctx, name: str = "", window: str = "") -> str:
     """Что стало с окном после нажатия — модель решит, нужно ли нажать что-то ещё."""
     return "Теперь " + look(ctx, window)
@@ -43,7 +55,7 @@ def after_click(ctx, name: str = "", window: str = "") -> str:
 
 @skill("click_button", "Нажать кнопку в окне",
        "Нажать в окне кнопку, пункт меню, вкладку или флажок по названию на экране. "
-       "window — если окно не активное.",
+       "window — только если нужно другое, не активное окно.",
        params=[Param("name", "string", "название на экране"),
                Param("window", "string", "программа или заголовок окна", required=False)],
        examples=["нажми {label}", "нажми на {label}", "нажми кнопку {label}", "нажми на кнопку {label}",

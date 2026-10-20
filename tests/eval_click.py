@@ -43,7 +43,7 @@ SCENARIOS = [
         "finish": ([C("Установка Видеоплеер завершена", T), C("Запустить Видеоплеер", "флажок", on=True),
                     C("Завершить", B)], {"Завершить": "gone"}),
         "gone": ([], {}),
-    }, lambda p, st: st == "gone" and "Установить" in p),
+    }, lambda p, st: st in ("finish", "gone") and "Установить" in p),      # установлено; «Завершить» — по желанию
 
     ("согласись с условиями и продолжи", "Установка — Видеоплеер", "setup", "license", None,
      lambda p, st: p[:2] == ["Я принимаю условия соглашения", "Далее >"]),
@@ -80,12 +80,18 @@ SCENARIOS = [(t, title, exe, start, states or SCENARIOS[1 if exe == "setup" else
              for t, title, exe, start, states, ok in SCENARIOS]
 
 
+# как на обычном компьютере: ещё несколько окон — список окон тоже занимает место в окне модели
+OTHERS = [{"hwnd": 10 + i, "pid": 10 + i, "title": t, "exe": e, "active": False} for i, (t, e) in enumerate([
+    ("Рецепт блинов на молоке — Google Chrome", "chrome.exe"), ("Telegram", "Telegram.exe"),
+    ("#общий | Друзья — Discord", "Discord.exe"), ("Steam", "steamwebhelper.exe"), ("Загрузки", "explorer.exe")])]
+
+
 def run_case(a: Assistant, case, monkeypatch) -> tuple[bool, list, str, float, list]:
     text, title, exe, start, states, ok = case
     st = {"now": start}
     pressed, asked = [], []
 
-    def controls(hwnds):
+    def controls(hwnds, timeout=8):
         return states[st["now"]][0]
 
     def press(hwnds, spoken, ask=None):
@@ -113,7 +119,8 @@ def run_case(a: Assistant, case, monkeypatch) -> tuple[bool, list, str, float, l
     monkeypatch(REGISTRY["close_app"], "handler", close_app)
     monkeypatch(REGISTRY["close_app"], "observe", lambda ctx, name: "Программа не закрылась, на экране "
                 + screen.look(ctx) if st["now"] == "dialog" else "")
-    monkeypatch(winapi, "open_windows", lambda: [] if st["now"] == "gone" else [{**win(), "active": True}])
+    monkeypatch(winapi, "foreground_window", lambda: None if st["now"] == "gone" else win())
+    monkeypatch(winapi, "open_windows", lambda: ([] if st["now"] == "gone" else [{**win(), "active": True}]) + OTHERS)
     monkeypatch(a, "_confirm", lambda q: asked.append(q) or True)
     a.recent.clear()
     a.fast.match = lambda t: None                 # «нажми …» тоже через модель — проверяем её

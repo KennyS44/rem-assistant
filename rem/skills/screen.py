@@ -117,7 +117,7 @@ def type_text(ctx, text: str, field: str = "", enter: str = "нет", window: st
         raise NotHere(str(e))
     if not winapi.is_foreground(w["hwnd"]):
         winapi.focus_window(w["hwnd"])          # клавиатура печатает только в активное окно
-        time.sleep(0.3)
+        time.sleep(0.3)                         # Alt из focus_window ушёл старому окну — даём переключиться
     what, label = uia.focus_field(hwnds, field)
     if what == "missing":
         raise NotHere(f"Поля «{field}» в окне не видно.")

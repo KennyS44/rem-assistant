@@ -472,8 +472,7 @@ def click_test(check, emit) -> None:
         p.kill()
         check("Блокнот открылся", False)
         return
-    winapi.focus_window(hwnd)
-    time.sleep(0.5)
+    time.sleep(1)
     res = REGISTRY["type_text"].handler(ctx, text=text, window="notepad")
     time.sleep(0.5)
     found = uia.controls([hwnd])

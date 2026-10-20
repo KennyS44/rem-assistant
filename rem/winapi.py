@@ -215,6 +215,8 @@ def focus_window(hwnd: int) -> None:
     _need_windows()
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)                                   # SW_RESTORE
+    if user32.GetForegroundWindow() == hwnd:
+        return                  # уже впереди; лишний Alt включил бы в окне режим меню
     press(VK["alt"])            # иначе Windows не даёт фоновой программе переключать окна
     user32.SetForegroundWindow(hwnd)
 

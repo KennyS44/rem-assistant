@@ -124,7 +124,7 @@ def test_model_sees_window_after_click_and_stops(tmp_path, monkeypatch):
     looked, after = client.seen[1][1][-1]["content"], client.seen[2][1][-1]["content"]
     assert "«Не сохранять»" in looked                       # модель видела кнопки
     assert after.startswith("Теперь Окно «Блокнот»") and "кнопок не видно" in after
-    assert client.seen[2][1][1]["content"] == looked[:120]  # прошлый снимок окна укорочен
+    assert client.seen[2][1][1]["content"] == looked[:60]  # прошлый снимок окна укорочен
     assert said == ["Блокнот закрыт без сохранения."]
 
 
@@ -151,3 +151,56 @@ def test_dangerous_button_needs_yes(tmp_path, monkeypatch):
 
 def test_click_skills_registered():
     assert REGISTRY["click_button"].observe and REGISTRY["look_at_window"].retell
+
+
+def test_fast_click_without_button_goes_to_model(tmp_path, monkeypatch):
+    """«нажми на паузу», а кнопки «паузу» в окне нет — значит, просили музыку на паузу."""
+    FakeScreen(monkeypatch)
+    paused = []
+    monkeypatch.setattr(REGISTRY["media_play_pause"], "handler", lambda ctx: paused.append(1))
+    client = Steps({"actions": [{"skill": "media_play_pause", "args": {}}], "reply": ""})
+    a = _assistant(client, tmp_path)
+    a.reload()
+    a.handle("нажми на паузу")
+    assert paused == [1] and client.calls == 1
+
+
+def test_spoken_label_strips_lead_words():
+    assert uia.spoken_label("по кнопке Сохранить") == "сохранить"
+    assert uia.spoken_label("на вкладку вид") == "вид"
+    assert uia.spoken_label("меню") == "меню"                 # одно слово не трогаем
+
+
+def test_close_shows_save_dialog_to_model(tmp_path, monkeypatch):
+    """«Закрой блокнот без сохранения»: блокнот спросил «Сохранить?» — модель видит диалог и жмёт."""
+    fs = FakeScreen(monkeypatch)
+    monkeypatch.setattr(REGISTRY["close_app"], "handler", lambda ctx, name: None)
+    monkeypatch.setattr(REGISTRY["close_app"], "observe", lambda ctx, name: "Программа не закрылась, на экране "
+                        + screen.look(ctx))
+    client = Steps({"actions": [{"skill": "close_app", "args": {"name": "блокнот"}}], "reply": ""},
+                   {"actions": [{"skill": "click_button", "args": {"name": "Не сохранять"}}], "reply": ""},
+                   {"actions": [], "reply": ""})
+    _assistant(client, tmp_path).handle("закрой блокнот без сохранения")
+    assert "«Не сохранять»" in client.seen[1][1][-1]["content"] and fs.pressed == ["Не сохранять"]
+
+
+def test_describe_shows_state():
+    text = describe("Настройки", "app.exe", [Control("Автозапуск", "флажок", on=True), Control("Трей", "флажок", on=False),
+                                             Control("Принимаю", "переключатель", on=True),
+                                             Control("Не принимаю", "переключатель", on=False)])
+    assert "флажок: «Автозапуск» (отмечен), «Трей» (не отмечен)" in text
+    assert "переключатель: «Принимаю» (выбрано), «Не принимаю»" in text
+
+
+def test_same_click_twice_stops(tmp_path, monkeypatch):
+    """Окно не меняется, а модель жмёт одно и то же — останавливаемся, а не жмём 8 раз."""
+    fs = FakeScreen(monkeypatch)
+    monkeypatch.setattr(uia, "controls", lambda hwnds: [Control("Принимаю", "переключатель", on=True)])
+    fs.press = lambda hwnds, spoken, ask=None: (fs.pressed.append(spoken), ("pressed", spoken))[1]
+    monkeypatch.setattr(uia, "find_and_press", fs.press)
+    client = Steps({"actions": [{"skill": "click_button", "args": {"name": "Принимаю"}}], "reply": ""})
+    a = _assistant(client, tmp_path)
+    said = []
+    a.say = said.append
+    a.handle("согласись")
+    assert len(fs.pressed) == 2 and said == ["Не получилось."]

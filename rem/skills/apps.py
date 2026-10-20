@@ -153,12 +153,26 @@ def _matching_pids(ctx, name: str) -> set[int]:
     return pids
 
 
+def after_close(ctx, name: str) -> str:
+    """Программа не закрылась — значит, спрашивает («Сохранить изменения?»): модель увидит окно."""
+    import time
+    from .screen import look
+    if not winapi.IS_WINDOWS:
+        return ""
+    time.sleep(0.8)
+    left = winapi.windows_of_pids(_matching_pids(ctx, name))
+    fg = winapi.foreground_window()
+    if not left or not fg or fg["hwnd"] not in left:
+        return ""
+    return "Программа не закрылась, на экране " + look(ctx)
+
+
 @skill("close_app", "Закрыть программу",
        "Закрыть запущенную программу по названию (окна закрываются вежливо, "
        "несохранённое программа спросит сама).",
        params=[Param("name", "string", "название программы")],
        examples=["закрой {app}", "выключи {app}"],
-       category="Программы")
+       category="Программы", observe=after_close)
 def close_app(ctx, name: str):
     pids = _matching_pids(ctx, name)
     hwnds = winapi.windows_of_pids(pids) if pids else []

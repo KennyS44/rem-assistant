@@ -247,9 +247,19 @@ def text_calls(reply: str) -> list[dict]:
     return calls
 
 
+def _tool_params(s: Skill) -> dict:
+    """Схема аргументов без пустых и служебных полей: она целиком уходит в окно модели (4096 токенов),
+    а лишние аргументы всё равно отсекает validate."""
+    schema = {"type": "object", "properties": {p.name: p.schema() for p in s.params}}
+    required = [p.name for p in s.params if p.required]
+    if required:
+        schema["required"] = required
+    return schema
+
+
 def build_tools(skills: list[Skill]) -> list[dict]:
     return [{"type": "function", "function": {
-        "name": s.name, "description": s.description, "parameters": s.args_schema()}} for s in skills]
+        "name": s.name, "description": s.description, "parameters": _tool_params(s)}} for s in skills]
 
 
 TOOL_EXAMPLES = """«открой телегу» → open_app(name="Telegram")
@@ -283,7 +293,7 @@ CLICK_RULE = """
 названа в окне. После нажатия увидишь окно заново; цель достигнута — ответь коротко."""
 
 CLICK_EXAMPLE = """
-«закрой блокнот без сохранения» → close_app(name="блокнот"), look_at_window(), затем click_button(name=…)"""
+«закрой блокнот без сохранения» → close_app(name="блокнот"), затем по окну click_button(name=…)"""
 
 
 def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) -> str:
@@ -506,7 +516,7 @@ class Brain:
         if self.mode != "tools" or not plan.model:
             return None
         # прошлые снимки окна устарели — короче, чтобы долгая задача влезла в окно модели
-        old = [{**m, "content": m["content"][:120]} if m.get("role") == "tool" else m for m in plan.history]
+        old = [{**m, "content": m["content"][:60]} if m.get("role") == "tool" else m for m in plan.history]
         history = old + [
             {"role": "assistant", "content": "",
              "tool_calls": [{"function": {"name": n, "arguments": a}} for n, a, _ in done]},

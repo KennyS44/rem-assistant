@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .. import uia, winapi
 from .apps import find_windows
-from .base import Cancelled, Param, skill
+from .base import Cancelled, NotHere, Param, skill
 
 
 def _target(ctx, window: str = "") -> tuple[dict, list[int]]:
@@ -54,10 +54,10 @@ def click_button(ctx, name: str, window: str = ""):
     try:
         _, hwnds = _target(ctx, window)
     except LookupError as e:
-        return str(e)
+        raise NotHere(str(e))
     what, label = uia.find_and_press(hwnds, name, ask=lambda n: ctx.confirm(f"Нажать «{n}»"))
     if what == "missing":
-        return f"Кнопки «{name}» в окне не видно."
+        raise NotHere(f"Кнопки «{name}» в окне не видно.")
     if what == "disabled":
         return f"Кнопка «{label}» сейчас неактивна."
     if what == "cancelled":

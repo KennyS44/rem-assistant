@@ -15,7 +15,7 @@ from .brain import Brain, Ollama, Plan, windows_context
 from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
-from .skills.base import Cancelled
+from .skills.base import Cancelled, NotHere
 from .skills.apps import AppIndex
 from .skills.system import MONTHS, WEEKDAYS
 from .timers import Timers
@@ -124,8 +124,8 @@ class Assistant:
 
     # ——— главное ———
 
-    def plan(self, text: str) -> Plan:
-        fast = self.fast.match(text)
+    def plan(self, text: str, fast_ok: bool = True) -> Plan:
+        fast = self.fast.match(text) if fast_ok else None
         if fast:
             return fast
         context = self.context()
@@ -202,12 +202,24 @@ class Assistant:
         elif not plan.actions and not plan.reply:
             replies.append(self.phrase("Команда не распознана.", "Простите, Рэм не расслышала."))
 
+        last = None
         for _ in range(MAX_STEPS):
             if plan.reply:
                 replies.append(plan.reply)
-            done, more = self._run(plan, dry_run, replies, results)
+            try:
+                done, more = self._run(plan, dry_run, replies, results)
+            except NotHere:                            # быстрый путь не подошёл — спрашиваем модель
+                plan = first = self.plan(text, fast_ok=False)
+                if plan.error:
+                    replies.append("Не удалось понять команду.")
+                    break
+                continue
             if not more:
                 break
+            if done == last:                          # то же действие, тот же результат — топчемся на месте
+                replies.append(self.phrase("Не получилось.", "Простите, у Рэм не получилось."))
+                break
+            last = done
             nxt = self.brain.follow(plan, done, cpu_only=self.game_mode)
             if nxt is None or nxt.error:              # продолжение не вышло — хотя бы пересказ
                 if nxt is not None:
@@ -255,21 +267,29 @@ class Assistant:
                 replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))
                 return done, False                     # «нет» — дальше не продолжаем
-            # действие выбрала модель — она видит, что стало (окно после нажатия), и решает, что дальше
-            seen = s.retell or bool(s.observe and plan.model)
+            seen = s.retell
             try:
-                out = s.handler(self.ctx, **args)
-                if seen and s.observe:
+                try:
+                    out = s.handler(self.ctx, **args)
+                except NotHere as e:
+                    if plan.source == "fast":
+                        raise                          # пусть решает модель — handle() переспросит её
+                    out, seen = str(e), True
+                # действие выбрала модель — она видит, что стало (окно после нажатия), и решает, что дальше
+                if s.observe and plan.model:
                     try:
                         after = s.observe(self.ctx, **args)
                     except Exception as e:
                         after = f"окно не прочитать: {e}"
-                    out = "\n".join(x for x in (out or "", after) if x)
+                    if after:                          # пусто — смотреть не на что, задача закончена
+                        out, seen = "\n".join(x for x in (out or "", after) if x), True
                 if out and not seen:
                     replies.append(out)
                 results.append((name, args, "ок"))
                 done.append((name, args, out or ""))
                 more = more or seen
+            except NotHere:
+                raise
             except Cancelled:                          # «нет» на опасную кнопку внутри умения
                 replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))

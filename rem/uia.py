@@ -40,7 +40,8 @@ EN = {
     "разрешить": "allow", "войти": "sign in", "поиск": "search", "настройки": "settings",
 }
 # «нажми на кнопку сохранить» — нужны только слова с экрана
-LEAD = ("на ", "кнопку ", "кнопка ", "пункт ", "меню ", "вкладку ", "ссылку ", "флажок ", "галочку ")
+LEAD = ("на ", "по ", "кнопку ", "кнопке ", "кнопка ", "пункт ", "пункту ", "меню ", "вкладку ", "вкладке ",
+        "ссылку ", "ссылке ", "флажок ", "галочку ")
 
 # такие кнопки Рэм нажимает только после «да»
 DANGER = ("удал", "отправ", "оплат", "купи", "покуп", "заказ", "формат", "стере", "очист", "сброс",
@@ -56,6 +57,7 @@ class Control:
     kind: str
     rect: tuple = (0, 0, 0, 0)          # left, top, right, bottom
     enabled: bool = True
+    on: bool | None = None              # флажок отмечен, вариант выбран; None — не бывает
     el: object = field(default=None, repr=False)   # элемент UI Automation (только в Windows)
 
 
@@ -123,7 +125,12 @@ def describe(title: str, exe: str, controls: list[Control], limit: int = 700) ->
             if len(texts) < 4 and name != title:
                 texts.append(f"«{name}»")
             continue
-        groups.setdefault(c.kind, []).append(f"«{name}»" + ("" if c.enabled else " (неактивна)"))
+        mark = "" if c.enabled else " (неактивна)"
+        if c.kind == "флажок" and c.on is not None:
+            mark += " (отмечен)" if c.on else " (не отмечен)"
+        elif c.on:
+            mark += " (выбрано)"
+        groups.setdefault(c.kind, []).append(f"«{name}»" + mark)
     lines = [head]
     if texts:
         lines.append("Текст: " + " ".join(texts))
@@ -179,8 +186,8 @@ def _automation():
 def _controls(uia, hwnds: list[int]) -> list[Control]:
     m = _module()
     cache = uia.CreateCacheRequest()
-    for prop in (30005, 30003, 30001, 30010, 30022):    # имя, тип, рамка, доступен, за экраном
-        cache.AddProperty(prop)
+    for prop in (30005, 30003, 30001, 30010, 30022, 30086, 30079):
+        cache.AddProperty(prop)         # имя, тип, рамка, доступен, за экраном, флажок, выбран
     cond = None
     for kind in KINDS:
         c = uia.CreatePropertyCondition(30003, kind)
@@ -198,10 +205,24 @@ def _controls(uia, hwnds: list[int]) -> list[Control]:
                 continue
             r = e.CachedBoundingRectangle
             out.append(Control(e.CachedName or "", KINDS.get(e.CachedControlType, "текст"),
-                               (r.left, r.top, r.right, r.bottom), bool(e.CachedIsEnabled), e))
+                               (r.left, r.top, r.right, r.bottom), bool(e.CachedIsEnabled), _state(e), e))
         if len(out) >= MAX_ELEMENTS:
             break
     return out
+
+
+def _state(e) -> bool | None:
+    """Флажок отмечен (ToggleState = 1) или вариант выбран (IsSelected); у кнопок — None."""
+    for prop in (30086, 30079):
+        try:
+            v = e.GetCachedPropertyValue(prop)
+        except Exception:
+            continue
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return v == 1
+    return None
 
 
 def controls(hwnds: list[int], timeout: float = 8) -> list[Control]:

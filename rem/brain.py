@@ -278,13 +278,20 @@ WINDOWS_RULE = """
 7. Получив результат функции, реши: нужно ещё действие — вызови; всё готово — ответь \
 по сути результата одной-двумя фразами."""
 
+CLICK_RULE = """
+8. Задача в окне в несколько нажатий: look_at_window, потом click_button по одной кнопке, как она \
+названа в окне. После нажатия увидишь окно заново; цель достигнута — ответь коротко."""
+
+CLICK_EXAMPLE = """
+«закрой блокнот без сохранения» → close_app(name="блокнот"), look_at_window(), затем click_button(name=…)"""
+
 
 def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) -> str:
     have = {s.name for s in skills or []}
     rule2 = SHELL_RULE if "run_command" in have else \
         "2. Если просят сделать то, для чего функции нет, — ничего не вызывай и коротко скажи, что этого пока не умеешь."
     examples = TOOL_EXAMPLES + (SHELL_EXAMPLE if "run_command" in have else "") + \
-        (FILES_EXAMPLE if "find_files" in have else "")
+        (FILES_EXAMPLE if "find_files" in have else "") + (CLICK_EXAMPLE if "click_button" in have else "")
     return f"""Ты — {name}, голосовой помощник на компьютере с Windows. Команда распознана из речи, \
 в ней бывают ошибки — угадывай смысл.
 
@@ -295,7 +302,7 @@ def build_tools_prompt(name: str = "Рэм", skills: list[Skill] | None = None) 
 4. На вопросы и болтовню отвечай текстом по-русски, коротко — одной-тремя фразами, без списков \
 и разметки. Можно переводить, считать, объяснять. Нет уверенности в факте — так и скажи и предложи поискать. Время и дату не выдумывай: \
 на «который час» и «какое число» вызывай tell_time и tell_date.
-5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}
+5. Не выдумывай аргументы, которых нет в команде.{WINDOWS_RULE}{CLICK_RULE if "click_button" in have else ""}
 
 Примеры:
 {examples}"""
@@ -381,8 +388,9 @@ def honest_reply(reply: str, has_actions: bool) -> str:
     return reply
 
 
-def validate(raw: dict, skills: list[Skill]) -> Plan:
-    """Проверяет ответ модели: только известные умения и корректные аргументы."""
+def validate(raw: dict, skills: list[Skill], acted: bool = False) -> Plan:
+    """Проверяет ответ модели: только известные умения и корректные аргументы.
+    acted — действия уже выполнены на прошлых шагах: «Блокнот закрыт» тогда правда."""
     by_name = {s.name: s for s in skills}
     plan = Plan(reply=str(raw.get("reply") or "").strip())
     for act in (raw.get("actions") or [])[:3]:
@@ -415,7 +423,7 @@ def validate(raw: dict, skills: list[Skill]) -> Plan:
             args[p.name] = v
         if ok:
             plan.actions.append((s.name, args))
-    plan.reply = honest_reply(plan.reply, bool(plan.actions))
+    plan.reply = honest_reply(plan.reply, bool(plan.actions) or acted)
     return plan
 
 
@@ -497,7 +505,9 @@ class Brain:
         продолжений не умеет."""
         if self.mode != "tools" or not plan.model:
             return None
-        history = plan.history + [
+        # прошлые снимки окна устарели — короче, чтобы долгая задача влезла в окно модели
+        old = [{**m, "content": m["content"][:120]} if m.get("role") == "tool" else m for m in plan.history]
+        history = old + [
             {"role": "assistant", "content": "",
              "tool_calls": [{"function": {"name": n, "arguments": a}} for n, a, _ in done]},
             # окно модели — 4096 токенов (больше не влезет в 4 ГБ видеопамяти вместе с моделью)
@@ -505,7 +515,7 @@ class Brain:
         cloud = plan.source == "cloud"
         t = time.perf_counter()
         try:
-            nxt = validate(self._call(plan.model, cloud, plan.user, cpu_only, history), self.skills)
+            nxt = validate(self._call(plan.model, cloud, plan.user, cpu_only, history), self.skills, acted=True)
         except (OllamaError, json.JSONDecodeError, KeyError) as e:
             nxt = Plan(error=str(e))
         nxt.source, nxt.model, nxt.user, nxt.history = plan.source, plan.model, plan.user, history

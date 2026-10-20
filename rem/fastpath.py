@@ -56,7 +56,7 @@ def _template_regex(example: str) -> re.Pattern:
     for p in re.split(r"(\{\w+\})", example):     # сначала слоты, потом нормализация текста
         if p == "{n}":
             rx += r" ?(?:на |до )?(?P<n>\d{1,3})(?: процент\w*| ?%)?"
-        elif p in ("{app}", "{site}", "{q}"):
+        elif p in ("{app}", "{site}", "{q}", "{label}"):
             rx += r" ?(?P<x>.+)"
         elif norm(p):
             rx += (" " if rx else "") + re.escape(norm(p))
@@ -121,6 +121,8 @@ class FastPath:
             x = (m.groupdict().get("x") or "").strip()
             if "{site}" in ex and x in SITES:
                 return Plan(actions=[(s.name, {"url": SITES[x]})], source="fast")
+            if "{label}" in ex and len(x.split()) <= 4 and " и " not in f" {x} ":   # «нажми сохранить и закрой» — модели
+                return Plan(actions=[(s.name, {"name": x})], source="fast")
             if "{app}" in ex and self._is_known_app(x):
                 return Plan(actions=[(s.name, {"name": x})], source="fast")
         return None

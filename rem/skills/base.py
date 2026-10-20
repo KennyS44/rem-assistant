@@ -45,6 +45,8 @@ class Skill:
     confirm: bool = False          # спрашивать «да/нет» перед выполнением
     category: str = "Прочее"
     retell: bool = False           # обработчик возвращает данные — модель пересказывает их фразой
+    # что стало после действия (ctx, **args) → текст: модель видит его, если действие выбрала она
+    observe: Optional[Callable[..., str]] = None
 
     def args_schema(self) -> dict:
         return {
@@ -63,14 +65,18 @@ class Skill:
         return f"{self.name}({', '.join(ps)}) — {self.description}"
 
 
+class Cancelled(Exception):
+    """Человек сказал «нет» на вопрос внутри умения — задачу не продолжаем."""
+
+
 REGISTRY: dict[str, Skill] = {}
 
 
 def skill(name: str, title: str, description: str, *, params=(), examples=(),
-          confirm: bool = False, category: str = "Прочее", retell: bool = False):
+          confirm: bool = False, category: str = "Прочее", retell: bool = False, observe=None):
     """Декоратор: регистрирует функцию как умение."""
     def wrap(fn):
         REGISTRY[name] = Skill(name, title, description, fn, list(params), list(examples),
-                               confirm, category, retell)
+                               confirm, category, retell, observe)
         return fn
     return wrap

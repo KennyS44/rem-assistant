@@ -405,8 +405,61 @@ def selftest(report: str | None = None) -> int:
         import onnx_asr
         data = Path(onnx_asr.__file__).parent / "preprocessors" / "data" / "gigaam_v3_conv.onnx"
         check("данные onnx_asr внутри сборки", data.exists())
+        emit("…нажимаю кнопки в настоящем окне")
+        try:
+            click_test(check, emit)
+        except Exception as e:
+            check(f"кнопки в окне: {e}", False)
     emit("ИТОГ: " + ("всё в порядке" if ok else "есть ошибки"))
     return 0 if ok else 1
+
+
+def click_test(check, emit) -> None:
+    """Настоящее окно с кнопками «Да / Нет / Отмена» (MessageBox из PowerShell): Рэм читает
+    его кнопки и нажимает сказанную по-русски. Какую нажали — окно пишет в файл."""
+    import subprocess
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from . import uia, winapi
+    from .assistant import Context
+    from .skills import REGISTRY
+    from .skills.apps import AppIndex
+    from .timers import Timers
+
+    ctx = Context({}, AppIndex(), Timers(lambda m: None), lambda t: None, lambda q: True)
+    for i, (said, want, via_skill) in enumerate([("нет", "No", False), ("кнопку отмена", "Cancel", True)]):
+        title = f"Рэм проверка {i + 1}"
+        out = Path(tempfile.gettempdir()) / f"rem-click-{i}.txt"
+        out.unlink(missing_ok=True)
+        ps = (f"Add-Type -AssemblyName System.Windows.Forms; "
+              f"$r = [System.Windows.Forms.MessageBox]::Show('Сохранить изменения?', '{title}', 'YesNoCancel'); "
+              f"Set-Content -Path '{out}' -Value $r")
+        p = subprocess.Popen(["powershell", "-NoProfile", "-Command", ps], creationflags=0x08000000)
+        hwnd, deadline = None, time.monotonic() + 30
+        while hwnd is None and time.monotonic() < deadline:
+            hwnd = winapi.user32.FindWindowW(None, title) or None     # и окна с владельцем
+            time.sleep(0.3)
+        if hwnd is None:
+            p.kill()
+            check(f"окно «{title}» появилось", False)
+            continue
+        found = uia.controls([hwnd])
+        emit("     " + uia.describe(title, "powershell.exe", found).replace("\n", " | "))
+        check("кнопки окна прочитаны", sum(c.kind == "кнопка" for c in found) >= 3)
+        if via_skill:
+            res = REGISTRY["click_button"].handler(ctx, name=said, window=title)
+            check(f"умение «нажми {said}» по названию окна ({res or 'нажато'})", res is None)
+        else:
+            what, label = uia.find_and_press([hwnd], said)
+            check(f"«{said}» → нажата «{label}» ({what})", what == "pressed")
+        try:
+            p.wait(15)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        got = out.read_text(encoding="utf-8-sig").strip() if out.exists() else "окно не закрылось"
+        check(f"в окне нажата нужная кнопка: {got}", got == want)
 
 
 def _utf8_console() -> None:

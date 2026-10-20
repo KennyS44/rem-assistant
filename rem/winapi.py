@@ -35,6 +35,8 @@ if IS_WINDOWS:
     user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.MonitorFromWindow.restype = wintypes.HANDLE
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
@@ -177,6 +179,48 @@ def focus_window(hwnd: int) -> None:
         user32.ShowWindow(hwnd, 9)                                   # SW_RESTORE
     press(VK["alt"])            # иначе Windows не даёт фоновой программе переключать окна
     user32.SetForegroundWindow(hwnd)
+
+
+def foreground_window() -> dict | None:
+    """Окно, с которым сейчас работает человек: {"hwnd", "pid", "title", "exe"}.
+    Окна самой Рэм не в счёт — тогда верхнее окно с панели задач. Диалоги тоже в счёт."""
+    if not IS_WINDOWS:
+        return None
+    import psutil
+    hwnd = user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not hwnd or pid.value == os.getpid():
+        wins = open_windows()
+        return wins[0] if wins else None
+    n = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+    try:
+        exe = psutil.Process(pid.value).name()
+    except psutil.Error:
+        exe = ""
+    return {"hwnd": hwnd, "pid": pid.value, "title": buf.value, "exe": exe}
+
+
+def click_at(x: int, y: int) -> None:
+    """Щелчок левой кнопкой мыши в точке экрана (в настоящих пикселях); курсор возвращается на место."""
+    _need_windows()
+    import time
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    prev = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2
+    try:
+        old = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(old))
+        user32.SetCursorPos(x, y)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)                       # MOUSEEVENTF_LEFTDOWN
+        user32.mouse_event(0x0004, 0, 0, 0, 0)                       # MOUSEEVENTF_LEFTUP
+        time.sleep(0.05)
+        user32.SetCursorPos(old.x, old.y)
+    finally:
+        if prev:
+            user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(prev))
 
 
 def close_windows(hwnds: list[int]) -> None:

@@ -15,13 +15,14 @@ from .brain import Brain, Ollama, Plan, windows_context
 from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
+from .skills.base import Cancelled
 from .skills.apps import AppIndex
 from .skills.system import MONTHS, WEEKDAYS
 from .timers import Timers
 
 log = logging.getLogger("rem.assistant")
 
-MAX_STEPS = 4         # многошаговая задача: не больше 4 обращений к модели
+MAX_STEPS = 8         # многошаговая задача: не больше 8 обращений к модели (мастер установки — 5–6 окон)
 RECENT_S = 180        # «закрой его» понимаем по командам за последние 3 минуты
 
 
@@ -32,6 +33,7 @@ class Context:
     apps: AppIndex
     timers: Timers
     say: Callable[[str], None]
+    confirm: Callable[[str], bool] = lambda question: False     # «да/нет» голосом — опасная кнопка
 
 
 class Assistant:
@@ -44,7 +46,7 @@ class Assistant:
         self.client = client or Ollama(config.get("ollama_url"))
         self.apps = apps or AppIndex()
         self.timers = Timers(self._timer_done)
-        self.ctx = Context(config, self.apps, self.timers, self.say)
+        self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q))
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
         self.notify_cb: Callable[[str], None] = lambda s: None
@@ -253,19 +255,31 @@ class Assistant:
                 replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
                 results.append((name, args, "отменено"))
                 return done, False                     # «нет» — дальше не продолжаем
+            # действие выбрала модель — она видит, что стало (окно после нажатия), и решает, что дальше
+            seen = s.retell or bool(s.observe and plan.model)
             try:
                 out = s.handler(self.ctx, **args)
-                if out and not s.retell:
+                if seen and s.observe:
+                    try:
+                        after = s.observe(self.ctx, **args)
+                    except Exception as e:
+                        after = f"окно не прочитать: {e}"
+                    out = "\n".join(x for x in (out or "", after) if x)
+                if out and not seen:
                     replies.append(out)
                 results.append((name, args, "ок"))
                 done.append((name, args, out or ""))
-                more = more or s.retell
+                more = more or seen
+            except Cancelled:                          # «нет» на опасную кнопку внутри умения
+                replies.append(self.phrase("Отменено.", "Хорошо, Рэм не будет."))
+                results.append((name, args, "отменено"))
+                return done, False
             except winapi.NotOnWindows:
                 results.append((name, args, "только в Windows"))
             except Exception as e:
                 log.exception("умение %s упало", name)
                 results.append((name, args, f"ошибка: {e}"))
-                if s.retell:                           # модель увидит ошибку и попробует иначе или объяснит
+                if seen:                               # модель увидит ошибку и попробует иначе или объяснит
                     done.append((name, args, f"ошибка: {e}"))
                     more = True
                 else:

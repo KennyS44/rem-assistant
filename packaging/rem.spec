@@ -15,6 +15,11 @@ datas = (
     + [(os.path.join(ROOT, "rem", "clips", "*.wav"), "rem/clips")]   # готовые фразы голосом Рем
     + [(os.path.join(ROOT, "rem", "art", "*.png"), "rem/art")]       # значок Рэм для трея и окон
 )
+# обёртка UI Automation (кнопки в чужих окнах) генерируется comtypes из системной библиотеки —
+# делаем это при сборке, чтобы готовый модуль попал внутрь Rem.exe
+import comtypes.client
+comtypes.client.GetModule("UIAutomationCore.dll")
+
 binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("pyaudiowpatch")   # libvosk.dll, portaudio
 
 a = Analysis(
@@ -26,6 +31,7 @@ a = Analysis(
         "pystray._win32",                    # бэкенд трея выбирается динамически
         "win32com.client", "pythoncom",
         "pycaw.pycaw", "comtypes.stream",
+        *collect_submodules("comtypes.gen"),    # UIAutomationClient и его зависимости
         "pyaudiowpatch",                     # звук колонок (импорт внутри функции)
     ],
     excludes=["matplotlib", "scipy", "pandas", "torch", "IPython", "pytest"],

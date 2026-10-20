@@ -328,5 +328,5 @@ def focus_field(hwnds: list[int], spoken: str = "", timeout: float = 8) -> tuple
     out = _in_thread(work, timeout)
     if out is None:
         raise RuntimeError("окно не ответило вовремя")
-    time.sleep(0.15)
+    time.sleep(0.4)                       # иначе первая буква теряется — поле ещё принимает фокус
     return out

@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from .. import uia, winapi
 from .apps import find_windows
 from .base import Cancelled, NotHere, Param, skill
@@ -115,6 +117,7 @@ def type_text(ctx, text: str, field: str = "", enter: str = "нет", window: st
         raise NotHere(str(e))
     if not winapi.is_foreground(w["hwnd"]):
         winapi.focus_window(w["hwnd"])          # клавиатура печатает только в активное окно
+        time.sleep(0.3)
     what, label = uia.focus_field(hwnds, field)
     if what == "missing":
         raise NotHere(f"Поля «{field}» в окне не видно.")

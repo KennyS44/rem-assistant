@@ -53,6 +53,21 @@ if IS_WINDOWS:
         _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
                     ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
 
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _INPUTUNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
+
     class GUID(ctypes.Structure):
         _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
                     ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
@@ -71,7 +86,7 @@ if IS_WINDOWS:
 VK = {
     "media_play_pause": 0xB3, "media_next": 0xB0, "media_prev": 0xB1, "media_stop": 0xB2,
     "volume_mute": 0xAD, "volume_down": 0xAE, "volume_up": 0xAF,
-    "win": 0x5B, "d": 0x44, "shift": 0x10, "ctrl": 0x11, "alt": 0x12,
+    "win": 0x5B, "d": 0x44, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "enter": 0x0D,
 }
 KEYEVENTF_KEYUP = 0x0002
 
@@ -83,6 +98,29 @@ def press(*keys: int) -> None:
         user32.keybd_event(k, 0, 0, 0)
     for k in reversed(keys):
         user32.keybd_event(k, 0, KEYEVENTF_KEYUP, 0)
+
+
+def type_unicode(text: str, chunk: int = 32) -> None:
+    """Напечатать текст в активное окно, как с клавиатуры, — любые буквы при любой раскладке.
+    Переводы строк — пробелами: во многих программах Enter отправляет сообщение."""
+    _need_windows()
+    import time
+    raw = " ".join(text.splitlines()).encode("utf-16-le")
+    units = [int.from_bytes(raw[i:i + 2], "little") for i in range(0, len(raw), 2)]
+    for i in range(0, len(units), chunk):
+        part = units[i:i + chunk]
+        arr = (INPUT * (2 * len(part)))()
+        for j, u in enumerate(part):
+            for k, flags in enumerate((0x0004, 0x0004 | KEYEVENTF_KEYUP)):     # KEYEVENTF_UNICODE
+                arr[2 * j + k].type = 1                                      # INPUT_KEYBOARD
+                arr[2 * j + k].ki.wScan = u
+                arr[2 * j + k].ki.dwFlags = flags
+        user32.SendInput(len(arr), arr, ctypes.sizeof(INPUT))
+        time.sleep(0.02)
+
+
+def is_foreground(hwnd: int) -> bool:
+    return IS_WINDOWS and user32.GetForegroundWindow() == hwnd
 
 
 # ——— папки ———

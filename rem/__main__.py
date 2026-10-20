@@ -461,6 +461,41 @@ def click_test(check, emit) -> None:
         got = out.read_text(encoding="utf-8-sig").strip() if out.exists() else "окно не закрылось"
         check(f"в окне нажата нужная кнопка: {got}", got == want)
 
+    # Блокнот: Рэм пишет текст по-русски, видит его в поле и закрывает «не сохранять»
+    text = "Привет, Рэм! 123"
+    p = subprocess.Popen(["notepad.exe"])
+    hwnd, deadline = None, time.monotonic() + 20
+    while hwnd is None and time.monotonic() < deadline:
+        hwnd = winapi.user32.FindWindowW("Notepad", None) or None
+        time.sleep(0.3)
+    if hwnd is None:
+        p.kill()
+        check("Блокнот открылся", False)
+        return
+    winapi.focus_window(hwnd)
+    time.sleep(0.5)
+    res = REGISTRY["type_text"].handler(ctx, text=text, window="notepad")
+    time.sleep(0.5)
+    found = uia.controls([hwnd])
+    values = [c.value for c in found if c.kind == "поле"]
+    emit("     " + uia.describe("Блокнот", "notepad.exe", found).replace("\n", " | "))
+    check(f"текст вписан в Блокнот: {values}", res is None and any(text in v for v in values))
+    winapi.close_windows([hwnd])
+    dialog_deadline, what = time.monotonic() + 10, ""
+    while time.monotonic() < dialog_deadline and what != "pressed":
+        wins = [h for h in winapi.windows_of_pids({p.pid}) if h != hwnd] or [hwnd]
+        try:
+            what, label = uia.find_and_press(wins, "не сохранять")
+        except Exception:
+            what = ""
+        time.sleep(0.5)
+    try:
+        p.wait(10)
+        check(f"Блокнот закрыт «не сохранять» ({what})", True)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        check(f"Блокнот закрыт «не сохранять» ({what})", False)
+
 
 def _utf8_console() -> None:
     """Консоль Windows по умолчанию в cp1252/cp866 — кириллица в ней падает с ошибкой."""

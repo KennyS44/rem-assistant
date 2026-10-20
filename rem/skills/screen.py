@@ -1,4 +1,4 @@
-"""Кнопки в открытых окнах: «нажми Сохранить», «что в окне».
+"""Кнопки и поля в открытых окнах: «нажми Сохранить», «напиши в поиск…», «что в окне».
 
 Элементы окна берутся из Windows UI Automation (см. rem/uia.py). Опасные кнопки
 («Удалить», «Отправить», «Оплатить»…) Рэм нажимает только после голосового «да».
@@ -85,3 +85,42 @@ def click_button(ctx, name: str, window: str = ""):
        category="Окна", retell=True)
 def look_at_window(ctx, window: str = ""):
     return look(ctx, window)
+
+
+# здесь Enter отправляет сообщение людям — сначала спросить
+MESSENGERS = ("telegram", "discord", "whatsapp", "viber", "skype", "slack", "teams", "zoom", "outlook",
+              "thunderbird", "signal")
+
+
+def _sends_to_people(w: dict, field: str) -> bool:
+    exe = w.get("exe", "").lower()
+    where = f"{exe} {w.get('title', '')} {field}".lower()
+    return any(m in exe for m in MESSENGERS) or any(s in where for s in ("сообщ", "message", "чат", "chat",
+                                                                         "почт", "mail"))
+
+
+@skill("type_text", "Вписать текст в окно",
+       "Вписать текст в поле окна: сообщение, поиск, адрес, имя файла. field — название поля, если полей "
+       "несколько; без него — в единственное поле или туда, где курсор. enter=да — после текста нажать "
+       "Enter (отправить, найти).",
+       params=[Param("text", "string", "что вписать, как сказал пользователь"),
+               Param("field", "string", "название поля", required=False),
+               Param("enter", "string", "нажать Enter после текста", enum=["да", "нет"], required=False),
+               Param("window", "string", "программа или заголовок окна", required=False)],
+       category="Окна")
+def type_text(ctx, text: str, field: str = "", enter: str = "нет", window: str = ""):
+    try:
+        w, hwnds = _target(ctx, window)
+    except LookupError as e:
+        raise NotHere(str(e))
+    if not winapi.is_foreground(w["hwnd"]):
+        winapi.focus_window(w["hwnd"])          # клавиатура печатает только в активное окно
+    what, label = uia.focus_field(hwnds, field)
+    if what == "missing":
+        raise NotHere(f"Поля «{field}» в окне не видно.")
+    winapi.type_unicode(text)
+    if enter == "да":
+        if _sends_to_people(w, label or field) and not ctx.confirm("Отправить"):
+            raise Cancelled                       # текст остаётся в поле, не отправлен
+        winapi.press(winapi.VK["enter"])
+    return None

@@ -1,4 +1,4 @@
-"""Кнопки, меню и вкладки в окнах других программ — через Windows UI Automation.
+"""Кнопки, меню, вкладки и поля ввода в окнах других программ — через Windows UI Automation.
 
 Windows сама перечисляет элементы окна с их названиями (так работают экранные дикторы),
 поэтому картинку экрана разбирать не нужно: быстро и без видеокарты. Игры и программы,
@@ -23,10 +23,10 @@ from .text import norm, translit
 KINDS = {
     50000: "кнопка", 50031: "кнопка", 50011: "меню", 50019: "вкладка", 50005: "ссылка",
     50002: "флажок", 50013: "переключатель", 50007: "пункт списка", 50024: "пункт дерева",
-    50003: "выпадающий список", 50020: "текст",
+    50003: "выпадающий список", 50020: "текст", 50004: "поле", 50030: "поле",
 }
 PRIORITY = ["кнопка", "меню", "вкладка", "флажок", "переключатель", "ссылка",
-            "выпадающий список", "пункт списка", "пункт дерева"]
+            "выпадающий список", "пункт списка", "пункт дерева", "поле"]
 MAX_ELEMENTS = 400
 
 # в английских программах кнопки по-английски, а говорят по-русски
@@ -40,8 +40,8 @@ EN = {
     "разрешить": "allow", "войти": "sign in", "поиск": "search", "настройки": "settings",
 }
 # «нажми на кнопку сохранить» — нужны только слова с экрана
-LEAD = ("на ", "по ", "кнопку ", "кнопке ", "кнопка ", "пункт ", "пункту ", "меню ", "вкладку ", "вкладке ",
-        "ссылку ", "ссылке ", "флажок ", "галочку ")
+LEAD = ("на ", "по ", "в ", "кнопку ", "кнопке ", "кнопка ", "пункт ", "пункту ", "меню ", "вкладку ", "вкладке ",
+        "ссылку ", "ссылке ", "флажок ", "галочку ", "поле ", "строку ", "строке ")
 
 # такие кнопки Рэм нажимает только после «да»
 DANGER = ("удал", "отправ", "оплат", "купи", "покуп", "заказ", "формат", "стере", "очист", "сброс",
@@ -58,6 +58,7 @@ class Control:
     rect: tuple = (0, 0, 0, 0)          # left, top, right, bottom
     enabled: bool = True
     on: bool | None = None              # флажок отмечен, вариант выбран; None — не бывает
+    value: str = ""                     # что написано в поле ввода
     el: object = field(default=None, repr=False)   # элемент UI Automation (только в Windows)
 
 
@@ -118,6 +119,8 @@ def describe(title: str, exe: str, controls: list[Control], limit: int = 700) ->
     texts, groups, seen = [], {}, set()
     for c in controls:
         name = " ".join(c.name.split())[:60]
+        if c.kind == "поле":
+            name = name or "без названия"
         if not name or (c.kind, name) in seen:
             continue
         seen.add((c.kind, name))
@@ -130,7 +133,9 @@ def describe(title: str, exe: str, controls: list[Control], limit: int = 700) ->
             mark += " (отмечен)" if c.on else " (не отмечен)"
         elif c.on:
             mark += " (выбрано)"
-        groups.setdefault(c.kind, []).append(f"«{name}»" + mark)
+        if c.kind == "поле" and c.value.strip():
+            mark += f" = «{' '.join(c.value.split())[:40]}»"
+        groups.setdefault(c.kind, []).append((name if name == "без названия" else f"«{name}»") + mark)
     lines = [head]
     if texts:
         lines.append("Текст: " + " ".join(texts))
@@ -186,8 +191,8 @@ def _automation():
 def _controls(uia, hwnds: list[int]) -> list[Control]:
     m = _module()
     cache = uia.CreateCacheRequest()
-    for prop in (30005, 30003, 30001, 30010, 30022, 30086, 30079):
-        cache.AddProperty(prop)         # имя, тип, рамка, доступен, за экраном, флажок, выбран
+    for prop in (30005, 30003, 30001, 30010, 30022, 30086, 30079, 30045):
+        cache.AddProperty(prop)         # имя, тип, рамка, доступен, за экраном, флажок, выбран, текст поля
     cond = None
     for kind in KINDS:
         c = uia.CreatePropertyCondition(30003, kind)
@@ -204,8 +209,9 @@ def _controls(uia, hwnds: list[int]) -> list[Control]:
             if e.CachedIsOffscreen:
                 continue
             r = e.CachedBoundingRectangle
-            out.append(Control(e.CachedName or "", KINDS.get(e.CachedControlType, "текст"),
-                               (r.left, r.top, r.right, r.bottom), bool(e.CachedIsEnabled), _state(e), e))
+            kind = KINDS.get(e.CachedControlType, "текст")
+            out.append(Control(e.CachedName or "", kind, (r.left, r.top, r.right, r.bottom),
+                               bool(e.CachedIsEnabled), _state(e), _value(e) if kind == "поле" else "", e))
         if len(out) >= MAX_ELEMENTS:
             break
     return out
@@ -223,6 +229,14 @@ def _state(e) -> bool | None:
         if isinstance(v, int):
             return v == 1
     return None
+
+
+def _value(e) -> str:
+    try:
+        v = e.GetCachedPropertyValue(30045)            # ValueValue
+    except Exception:
+        return ""
+    return v if isinstance(v, str) else ""
 
 
 def controls(hwnds: list[int], timeout: float = 8) -> list[Control]:
@@ -277,4 +291,42 @@ def find_and_press(hwnds: list[int], spoken: str, ask=None, timeout: float = 8) 
             return "pressed", result["name"]
         raise RuntimeError("окно не ответило вовремя")
     time.sleep(0.4)                       # окно успевает перерисоваться
+    return out
+
+
+def pick_field(spoken: str, found: list[Control]) -> Control | None | str:
+    """Поле для текста: названное, иначе единственное в окне. "caret" — полей не видно совсем
+    (программа их не показывает) или их несколько, а название не сказано: пишем туда, где курсор."""
+    fields = [c for c in found if c.kind == "поле" and c.enabled]
+    if spoken:
+        hit = best_match(spoken, fields)
+        if hit:
+            return hit
+    if len(fields) == 1:
+        return fields[0]
+    if not fields or not spoken:
+        return "caret"
+    return None
+
+
+def focus_field(hwnds: list[int], spoken: str = "", timeout: float = 8) -> tuple[str, str]:
+    """Поставить курсор в поле. → (focused | caret | missing, название поля)."""
+    winapi._need_windows()
+
+    def work(uia):
+        c = pick_field(spoken, _controls(uia, hwnds))
+        if c is None:
+            return "missing", ""
+        if c == "caret":
+            return "caret", ""
+        try:
+            c.el.SetFocus()
+        except Exception:
+            winapi.click_at((c.rect[0] + c.rect[2]) // 2, (c.rect[1] + c.rect[3]) // 2)
+        return "focused", c.name
+
+    out = _in_thread(work, timeout)
+    if out is None:
+        raise RuntimeError("окно не ответило вовремя")
+    time.sleep(0.15)
     return out

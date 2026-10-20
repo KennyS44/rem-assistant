@@ -217,3 +217,71 @@ def test_same_click_twice_stops(tmp_path, monkeypatch):
     a.say = said.append
     a.handle("согласись")
     assert len(fs.pressed) == 2 and said == ["Не получилось."]
+
+
+# ——— ввод текста ———
+
+SEARCH = [Control("Поиск", "поле"), Control("Адрес", "поле", value="https://ya.ru"), Control("Найти", "кнопка")]
+
+
+def test_pick_field():
+    assert uia.pick_field("поиска", SEARCH).name == "Поиск"            # «в поле поиска»
+    assert uia.pick_field(uia.spoken_label("в поле адрес"), SEARCH).name == "Адрес"
+    assert uia.pick_field("", [Control("", "поле"), Control("Отправить", "кнопка")]).kind == "поле"   # единственное
+    assert uia.pick_field("", SEARCH) == "caret"                    # полей несколько — туда, где курсор
+    assert uia.pick_field("сообщение", []) == "caret"               # программа полей не показывает
+    assert uia.pick_field("телефон", SEARCH) is None                # такого поля нет
+
+
+def test_describe_fields():
+    text = describe("Браузер", "chrome.exe", SEARCH + [Control("", "поле")])
+    assert "поле: «Поиск», «Адрес» = «https://ya.ru», без названия" in text
+
+
+class FakeKeyboard:
+    def __init__(self, monkeypatch, exe="notepad.exe", fields=SEARCH):
+        from rem import winapi
+        self.typed, self.keys, self.focused = [], [], []
+        monkeypatch.setattr(screen, "_target", lambda ctx, window="": ({"hwnd": 1, "title": "Окно", "exe": exe}, [1]))
+        monkeypatch.setattr(winapi, "is_foreground", lambda h: True)
+        monkeypatch.setattr(winapi, "type_unicode", self.typed.append)
+        monkeypatch.setattr(winapi, "press", lambda *k: self.keys.append(k))
+
+        def focus(hwnds, spoken=""):
+            c = uia.pick_field(spoken, fields)
+            if c is None:
+                return "missing", ""
+            if c == "caret":
+                return "caret", ""
+            self.focused.append(c.name)
+            return "focused", c.name
+        monkeypatch.setattr(uia, "focus_field", focus)
+
+
+def _ctx(answer=True, asked=None):
+    from rem.assistant import Context
+    return Context({}, AppIndex([]), None, lambda t: None, lambda q: (asked.append(q) if asked is not None else 0) or answer)
+
+
+def test_type_into_search_and_enter(monkeypatch):
+    kb = FakeKeyboard(monkeypatch)
+    asked = []
+    REGISTRY["type_text"].handler(_ctx(asked=asked), text="Рецепт борща!", field="поиска", enter="да")
+    assert kb.focused == ["Поиск"] and kb.typed == ["Рецепт борща!"] and kb.keys == [(0x0D,)]
+    assert asked == []                                              # поиск — не людям, без вопроса
+
+
+def test_messenger_asks_before_send(monkeypatch):
+    from rem.skills.base import Cancelled
+    kb = FakeKeyboard(monkeypatch, exe="Telegram.exe", fields=[])
+    asked = []
+    with pytest.raises(Cancelled):
+        REGISTRY["type_text"].handler(_ctx(answer=False, asked=asked), text="Буду через 10 минут", enter="да")
+    assert kb.typed == ["Буду через 10 минут"] and kb.keys == [] and asked == ["Отправить"]   # вписано, не отправлено
+
+
+def test_missing_field_goes_to_model(monkeypatch):
+    from rem.skills.base import NotHere
+    FakeKeyboard(monkeypatch)
+    with pytest.raises(NotHere, match="Поля «телефон» в окне не видно"):
+        REGISTRY["type_text"].handler(_ctx(), text="123", field="телефон")

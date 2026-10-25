@@ -410,8 +410,68 @@ def selftest(report: str | None = None) -> int:
             click_test(check, emit)
         except Exception as e:
             check(f"кнопки в окне: {e}", False)
+        emit("…переключаю вкладки в браузере")
+        try:
+            tab_test(check, emit)
+        except Exception as e:
+            check(f"вкладки: {e}", False)
     emit("ИТОГ: " + ("всё в порядке" if ok else "есть ошибки"))
     return 0 if ok else 1
+
+
+def tab_test(check, emit) -> None:
+    """Edge с тремя вкладками: Рэм переключает их по названию, по номеру и «следующая»,
+    а заголовок окна показывает, какая вкладка стала активной."""
+    import os
+    import subprocess
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from . import winapi
+    from .assistant import Context
+    from .skills import REGISTRY
+    from .skills.apps import AppIndex
+    from .timers import Timers
+
+    edge = Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft/Edge/Application/msedge.exe"
+    if not edge.exists():
+        emit("     Edge не установлен — вкладки не проверяю")
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="rem-tabs-"))
+    pages = []
+    for name in ("Почта", "Погода", "Новости"):
+        page = tmp / f"{name}.html"
+        page.write_text(f"<title>{name}</title><h1>{name}</h1>", encoding="utf-8")
+        pages.append(page.as_uri())
+    p = subprocess.Popen([str(edge), f"--user-data-dir={tmp / 'profile'}", "--no-first-run",
+                          "--no-default-browser-check", "--new-window", *pages])
+    ctx = Context({}, AppIndex(), Timers(lambda m: None), lambda t: None, lambda q: True)
+    try:
+        w, deadline = None, time.monotonic() + 30
+        while w is None and time.monotonic() < deadline:
+            time.sleep(0.5)
+            w = next((x for x in winapi.open_windows() if x["exe"].lower() == "msedge.exe" and x["title"]), None)
+        if w is None:
+            check("Edge открылся", False)
+            return
+        winapi.focus_window(w["hwnd"])
+        time.sleep(2)
+
+        def title() -> str:
+            fg = winapi.foreground_window()
+            return fg["title"] if fg else ""
+
+        for said, want in [("вкладку новости", "Новости"), ("первую вкладку", "Почта"),
+                           ("следующая вкладка", "Погода"), ("предыдущую вкладку", "Почта")]:
+            res = REGISTRY["switch_tab"].handler(ctx, name=said)
+            time.sleep(0.5)
+            now = title()
+            check(f"«{said}» → {now[:40]} ({res or 'переключено'})", res is None and now.startswith(want))
+        res = REGISTRY["switch_tab"].handler(ctx, name="музыка")
+        check(f"нет вкладки «музыка» — так и сказано: {res}", res is not None and "музыка" in res)
+    finally:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
 
 
 def click_test(check, emit) -> None:

@@ -87,6 +87,7 @@ VK = {
     "media_play_pause": 0xB3, "media_next": 0xB0, "media_prev": 0xB1, "media_stop": 0xB2,
     "volume_mute": 0xAD, "volume_down": 0xAE, "volume_up": 0xAF,
     "win": 0x5B, "d": 0x44, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "enter": 0x0D,
+    "tab": 0x09, "a": 0x41,
 }
 KEYEVENTF_KEYUP = 0x0002
 

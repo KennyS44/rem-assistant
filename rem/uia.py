@@ -294,6 +294,24 @@ def find_and_press(hwnds: list[int], spoken: str, ask=None, timeout: float = 8) 
     return out
 
 
+def press_control(hwnds: list[int], name: str, kind: str, timeout: float = 8) -> bool:
+    """Нажать элемент с точно таким названием и видом (его уже нашли в controls). → нашёлся ли."""
+    winapi._need_windows()
+
+    def work(uia):
+        c = next((c for c in _controls(uia, hwnds) if c.kind == kind and c.name == name), None)
+        if c is None:
+            return False
+        _press(c)
+        return True
+
+    out = _in_thread(work, timeout)
+    if out is None:
+        raise RuntimeError("окно не ответило вовремя")
+    time.sleep(0.4)
+    return out
+
+
 def pick_field(spoken: str, found: list[Control]) -> Control | None | str:
     """Поле для текста: названное, иначе единственное в окне. "caret" — полей не видно совсем
     (программа их не показывает) или их несколько, а название не сказано: пишем туда, где курсор."""

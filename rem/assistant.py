@@ -7,11 +7,11 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from . import winapi
-from .brain import CLICK_HINT, Brain, Ollama, Plan, windows_context
+from .brain import CLICK_HINT, Brain, Ollama, Plan, claims_done, windows_context
 from .config import app_dir
 from .fastpath import FastPath
 from .skills import active_skills
@@ -54,6 +54,7 @@ class Assistant:
         self._gpu_checked = False
         self._cloud_warned = False
         self.recent: deque = deque(maxlen=4)       # (когда, команда, результаты, ответ) — память разговора
+        self._failed = ""
         self.journal = app_dir() / "actions.log"
         self.reload()
 
@@ -237,6 +238,8 @@ class Assistant:
                         replies.append(self.brain.retell(text, out) or self.phrase("Готово.", "Рэм всё сделала."))
                 break
             plan = nxt
+            if self._failed and not plan.actions and (not plan.reply or claims_done(plan.reply)):
+                plan = replace(plan, reply=self._failed)   # после неудачи «готово» не говорим — говорим, что вышло
             if not plan.actions and not plan.reply:
                 replies.append(self.phrase("Готово.", "Рэм всё сделала."))
 
@@ -261,6 +264,7 @@ class Assistant:
         """Выполнить действия плана. → (что сделано для модели: умение, аргументы, вывод;
         нужен ли следующий шаг — умение вернуло данные)."""
         done, more = [], False
+        self._failed = ""                              # что не вышло на этом шаге — модель не скажет «готово»
         for name, args in plan.actions:
             s = self.by_name.get(name)
             if not s:
@@ -283,6 +287,7 @@ class Assistant:
                     if plan.source == "fast":
                         raise                          # пусть решает модель — handle() переспросит её
                     out, seen = str(e), True
+                    self._failed = str(e)
                 # действие выбрала модель — она видит, что стало (окно после нажатия), и решает, что дальше
                 if s.observe and plan.model:
                     try:
@@ -310,6 +315,8 @@ class Assistant:
                 if seen:                               # модель увидит ошибку и попробует иначе или объяснит
                     done.append((name, args, f"ошибка: {e}"))
                     more = True
+                    self._failed = self.phrase("Не получилось: ", "Простите, у Рэм не получилось: ") + \
+                        f"{s.title.lower()}."
                 else:
                     replies.append(self.phrase("Не получилось: ", "Простите, у Рэм не получилось: ")
                                    + f"{s.title.lower()}.")

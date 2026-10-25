@@ -349,3 +349,28 @@ def test_call_written_as_text():
     assert text_calls("volume_mute()") == [{"skill": "volume_mute", "args": {}}]
     assert text_calls('volume_set(level=30), web_search(query="блины")')[1]["args"] == {"query": "блины"}
     assert text_calls("Здравствуйте! Рэм слушает (внимательно).") == []
+
+
+def test_signin_url_from_long_401():
+    """Ollama без входа отвечает 401 с длинной ссылкой — ссылку не обрезаем (0.4.0 обрезал до 200 знаков)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from rem.brain import Ollama
+    link = "https://ollama.com/connect?name=DESKTOP-HVKB5TE&key=" + "c3NoLWVkMjU1MTkgQUFBQ" * 8
+    body = json.dumps({"error": "unauthorized", "signin_url": link}).replace("&", "\\u0026").encode()
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert Ollama(f"http://127.0.0.1:{srv.server_port}").signin_url() == link
+    finally:
+        srv.shutdown()

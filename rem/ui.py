@@ -681,7 +681,7 @@ class SettingsWindow:
                     err = (plan.error if plan else err) or err or "ответ неверный"
                 status(f"Ни одна облачная модель не ответила: {err[:150]}", "#b33")
             except Exception as e:
-                status(f"ошибка: {e}", "#b33")
+                status(f"ошибка: {str(e)[:200]}", "#b33")
         threading.Thread(target=work, daemon=True).start()
 
     # вкладка «Умения»

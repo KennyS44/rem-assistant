@@ -56,7 +56,7 @@ class Ollama:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
-            raise OllamaError(f"Ollama ответила {e.code}: {e.read().decode(errors='replace')[:200]}")
+            raise OllamaError(f"Ollama ответила {e.code}: {e.read().decode(errors='replace')[:2000]}")  # не короче: в 401 длинная ссылка входа
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             raise OllamaError(f"Ollama недоступна: {e}")
 

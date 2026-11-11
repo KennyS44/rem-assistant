@@ -428,6 +428,16 @@ def selftest(report: str | None = None) -> int:
         import onnx_asr
         data = Path(onnx_asr.__file__).parent / "preprocessors" / "data" / "gigaam_v3_conv.onnx"
         check("данные onnx_asr внутри сборки", data.exists())
+        try:
+            from .skills.pcstatus import disk_text, load_text
+            d, ld = disk_text(), load_text()
+            emit(f"     {d} {ld}")
+            check("место на дисках и нагрузка", d.startswith("На диске C") and ld.startswith("Процессор занят"))
+            outs = winapi.audio_outputs()          # на сервере сборки звуковых устройств может не быть
+            check(f"устройства вывода звука читаются ({len(outs)}: "
+                  f"{'; '.join(o['name'] for o in outs) or 'нет'})", True)
+        except Exception as e:
+            check(f"состояние компьютера и звук: {e}", False)
         emit("…нажимаю кнопки в настоящем окне")
         try:
             click_test(check, emit)
@@ -573,6 +583,21 @@ def click_test(check, emit) -> None:
         check("буфер обмена вернулся", selection.clipboard_text() == "было в буфере")
     except Exception as e:
         check(f"выделенный текст: {e}", False)
+    # клавиши голосом: «выдели всё» + «скопируй» → в буфере текст из Блокнота
+    try:
+        from . import selection
+        from .fastpath import FastPath
+        from .skills import active_skills
+        fp = FastPath(active_skills({}))
+        selection.set_clipboard_text("пусто")
+        for said in ("выдели всё", "скопируй"):
+            plan = fp.match(said)
+            REGISTRY[plan.actions[0][0]].handler(ctx, **plan.actions[0][1])
+            time.sleep(0.3)
+        got = selection.clipboard_text()
+        check(f"«выдели всё», «скопируй» → в буфере «{got}»", got == text)
+    except Exception as e:
+        check(f"клавиши: {e}", False)
     # окна: на весь экран → левая половина → свернуть → вернуть (умение «окна», как по голосу)
     try:
         import ctypes

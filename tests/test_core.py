@@ -302,7 +302,7 @@ def test_run_command_asks_with_description_and_model_retells(tmp_path, monkeypat
     a.reload()
     a.notify_cb = notes.append
     a.say = said.append
-    a.handle("сколько места на диске це")
+    a.handle("сколько весит папка загрузки")      # «место на диске» теперь отвечает pc_status без модели
     assert asked == ["Узнать место на диске C"] and notes == ["Команда: Get-PSDrive C"]
     assert said == ["На диске C свободно 120 гигабайт."]
     tool_msg = client.seen[1][1][-1]

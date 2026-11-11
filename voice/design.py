@@ -59,7 +59,7 @@ def spoken(text: str) -> str:
     Ollama — по-русски."""
     text = re.sub(r"\b(\d{1,2}):(\d\d)\b",
                   lambda m: HOURS[int(m.group(1))] + (" часов" if m.group(2) == "00" else " тридцать"), text)
-    text = text.replace("Ollama", "Оллама").replace("YouTube", "Ютуб")
+    text = text.replace("Ollama", "Оллама").replace("YouTube", "Ютуб").replace("ЦБ", "цэбэ")
     for a, b in NUMBERS.items():
         text = re.sub(rf"\b{a}\b", b, text)
     return re.sub(r"\b\d+\b", lambda m: WORDS[m.group()], text)

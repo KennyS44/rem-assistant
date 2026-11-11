@@ -91,6 +91,9 @@ VK = {
     "volume_mute": 0xAD, "volume_down": 0xAE, "volume_up": 0xAF,
     "win": 0x5B, "d": 0x44, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "enter": 0x0D,
     "tab": 0x09, "a": 0x41, "c": 0x43, "backspace": 0x08, "left": 0x25, "right": 0x27,
+    "f": 0x46, "s": 0x53, "t": 0x54, "v": 0x56, "w": 0x57, "x": 0x58, "y": 0x59, "z": 0x5A,
+    "f4": 0x73, "f5": 0x74, "home": 0x24, "end": 0x23, "esc": 0x1B, "space": 0x20,
+    "pgup": 0x21, "pgdn": 0x22,
 }
 KEYEVENTF_KEYUP = 0x0002
 
@@ -102,6 +105,12 @@ def press(*keys: int) -> None:
         user32.keybd_event(k, 0, 0, 0)
     for k in reversed(keys):
         user32.keybd_event(k, 0, KEYEVENTF_KEYUP, 0)
+
+
+def scroll(notches: int) -> None:
+    """Колесо мыши: > 0 — вверх, < 0 — вниз. Листается то окно, над которым мышь (как рукой)."""
+    _need_windows()
+    user32.mouse_event(0x0800, 0, 0, ctypes.c_int(notches * 120), 0)     # MOUSEEVENTF_WHEEL; вниз — отрицательное
 
 
 def type_unicode(text: str, chunk: int = 32) -> None:
@@ -401,6 +410,45 @@ def _endpoint_volume():
     from comtypes import CLSCTX_ALL                   # старые версии pycaw
     iface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
     return ctypes.cast(iface, ctypes.POINTER(IAudioEndpointVolume))
+
+
+def _com():
+    import comtypes
+    try:
+        comtypes.CoInitialize()        # умения выполняются не в главном потоке
+    except OSError:
+        pass
+
+
+def audio_outputs() -> list[dict]:
+    """Включённые устройства вывода звука: [{"id", "name", "default"}]."""
+    _need_windows()
+    _com()
+    from pycaw.pycaw import AudioUtilities
+    cur = AudioUtilities.GetSpeakers()
+    cur_id = getattr(cur, "id", None)
+    out = []
+    for d in AudioUtilities.GetAllDevices(data_flow=0, device_state=1):    # eRender, DEVICE_STATE_ACTIVE
+        if d is not None and d.FriendlyName:
+            out.append({"id": d.id, "name": d.FriendlyName, "default": d.id == cur_id})
+    return out
+
+
+def set_audio_output(dev_id: str) -> None:
+    """Сделать устройство выводом по умолчанию — для всего (музыка, игры, звонки)."""
+    _need_windows()
+    _com()
+    from pycaw.constants import ERole
+    from pycaw.pycaw import AudioUtilities
+    AudioUtilities.SetDefaultDevice(dev_id, [ERole.eConsole, ERole.eMultimedia, ERole.eCommunications])
+
+
+def app_audio(pids: set[int]) -> list:
+    """Громкость звука программ (микшер громкости): ISimpleAudioVolume их сессий."""
+    _need_windows()
+    _com()
+    from pycaw.pycaw import AudioUtilities
+    return [s.SimpleAudioVolume for s in AudioUtilities.GetAllSessions() if s.ProcessId in pids]
 
 
 def get_volume() -> int:

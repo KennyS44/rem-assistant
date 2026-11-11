@@ -19,7 +19,7 @@ on:
         description: "qwen (Qwen3-TTS) или vox (VoxCPM2), для samples"
         default: qwen
       only:
-        description: "для pack: переозвучить только эту фразу (пусто — все)"
+        description: "для pack: переозвучить только эту фразу; «новые» — только фразы без записи; пусто — все"
         default: ""
 
 jobs:
@@ -42,7 +42,8 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           extra=()
-          if [ -n "$ONLY" ]; then extra=(--only "$ONLY" --candidates 8); fi
+          if [ "$ONLY" = "новые" ]; then extra=(--missing)
+          elif [ -n "$ONLY" ]; then extra=(--only "$ONLY" --candidates 8); fi
           python voice/design.py ${{ inputs.mode }} out --variant ${{ inputs.variant }} --seed ${{ inputs.seed }} --engine ${{ inputs.engine }} "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:

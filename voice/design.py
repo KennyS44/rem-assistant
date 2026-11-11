@@ -51,8 +51,15 @@ WORDS = {"5": "пять", "10": "десять", "15": "пятнадцать", "2
          "30": "тридцать", "40": "сорок", "45": "сорок пять"}
 
 
+HOURS = {5: "пять", 6: "шесть", 7: "семь", 8: "восемь", 9: "девять", 10: "десять", 11: "одиннадцать"}
+
+
 def spoken(text: str) -> str:
-    """Цифры словами — так модель не ошибётся с падежом."""
+    """Цифры словами — так модель не ошибётся с падежом; «7:00» → «семь часов», «7:30» → «семь тридцать»;
+    Ollama — по-русски."""
+    text = re.sub(r"\b(\d{1,2}):(\d\d)\b",
+                  lambda m: HOURS[int(m.group(1))] + (" часов" if m.group(2) == "00" else " тридцать"), text)
+    text = text.replace("Ollama", "Оллама")
     for a, b in NUMBERS.items():
         text = re.sub(rf"\b{a}\b", b, text)
     return re.sub(r"\b\d+\b", lambda m: WORDS[m.group()], text)
@@ -193,9 +200,10 @@ def loudness(w: np.ndarray) -> np.ndarray:
     return w * min(1.0, 0.95 / max(1e-6, np.abs(w).max()))
 
 
-def pack(dm, out: Path, only: list[str] | None = None, candidates: int = CANDIDATES) -> None:
+def pack(dm, out: Path, only: list[str] | None = None, candidates: int = CANDIDATES,
+         missing: bool = False) -> None:
     """Голос 2.5 (описание FLUENT) для каждой фразы; лучший из candidates вариантов.
-    only — переозвучить только эти фразы."""
+    only — переозвучить только эти фразы; missing — только те, которых ещё нет в rem/clips."""
     import json
     import onnx_asr
     from difflib import SequenceMatcher
@@ -206,6 +214,9 @@ def pack(dm, out: Path, only: list[str] | None = None, candidates: int = CANDIDA
         if missing:
             raise SystemExit(f"нет таких фраз: {missing}")
         phrases = only
+    if missing:
+        phrases = [t for t in phrases if not voiceclips.clip(t)]
+        print(f"новых фраз: {len(phrases)}", flush=True)
     asr = onnx_asr.load_model("gigaam-v3-e2e-ctc", quantization="int8")
     em = load("Qwen3-TTS-12Hz-0.6B-Base")
 
@@ -226,7 +237,7 @@ def pack(dm, out: Path, only: list[str] | None = None, candidates: int = CANDIDA
             w = short_pauses(trim(np.asarray(wavs[0]), sr), sr)
             w16 = np.interp(np.arange(0, len(w), sr / 16000), np.arange(len(w)), w).astype(np.float32)
             heard = asr.recognize(w16, sample_rate=16000)
-            ok = SequenceMatcher(None, norm(heard), norm(text)).ratio()
+            ok = max(SequenceMatcher(None, norm(heard), norm(t)).ratio() for t in (text, spoken(text)))
             # лишние слова (например, обрывок на другом языке в конце) — вариант не годится
             if len(norm(heard).split()) > max(len(norm(text).split()), len(norm(spoken(text)).split())):
                 ok = 0.0
@@ -294,6 +305,7 @@ def main() -> int:
     ap.add_argument("--engine", default="qwen", choices=["qwen", "vox"])
     ap.add_argument("--only", action="append", help="переозвучить только эту фразу (можно несколько раз)")
     ap.add_argument("--candidates", type=int, default=CANDIDATES)
+    ap.add_argument("--missing", action="store_true", help="озвучить только фразы, которых нет в rem/clips")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(4)
@@ -314,7 +326,7 @@ def main() -> int:
                 sf.write(a.out / f"qwen-{v}{seed}.wav", wav, sr, subtype="PCM_16")
         return 0
 
-    pack(dm, a.out, a.only, a.candidates)
+    pack(dm, a.out, a.only, a.candidates, a.missing)
     return 0
 
 

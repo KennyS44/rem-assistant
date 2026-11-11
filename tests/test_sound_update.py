@@ -1,3 +1,4 @@
+import re
 import sys
 import textwrap
 import types
@@ -216,3 +217,37 @@ def test_rem_style_prompt_and_emoji():
     plain = Brain(dict(cfgmod.DEFAULTS), active_skills(cfg), client=object())
     assert "третьем лице" not in plain.system
     assert honest_reply("Рэм рада помочь! 😊", False) == "Рэм рада помочь!"
+
+
+def test_voiceclips_whole_multi_sentence_phrase(tmp_path, monkeypatch):
+    """Вопрос «да/нет» записан целиком — находится целиком, а не по предложениям."""
+    from rem import voiceclips
+    monkeypatch.setattr(voiceclips, "CLIPS", tmp_path)
+    for t in ("Выключить компьютер? Скажите «да» или «нет».", "Рэм слушает."):
+        (tmp_path / f"{voiceclips.key(t)}.wav").write_bytes(b"RIFF")
+    assert len(voiceclips.clips_for("Выключить компьютер? Скажите «да» или «нет».")) == 1
+    assert len(voiceclips.clips_for("Рэм слушает. Выключить компьютер? Скажите «да» или «нет».")) == 2
+    assert voiceclips.clips_for("Выключить компьютер?") is None
+
+
+def test_voiceclips_fixed_phrases_are_what_rem_says(tmp_path):
+    """Записанные фразы совпадают слово в слово с тем, что Рэм говорит в стиле Рэм."""
+    import datetime as dt
+    from rem import config as cfgmod
+    from rem import voiceclips
+    from rem.assistant import Assistant
+    from rem.reminders import due_phrase
+    from rem.skills import REGISTRY
+    p = set(voiceclips.phrases())
+    a = Assistant({**cfgmod.DEFAULTS, "rem_style": True})
+    a.ctx.selection = lambda: ("", "")
+    assert a._not_understood() in p
+    assert REGISTRY["selected_text"].handler(a.ctx, action="read") in p
+    assert REGISTRY["set_reminder"].handler(a.ctx, at="", kind="alarm") in p
+    assert due_phrase({"kind": "alarm", "at": "2026-11-12T07:30"}, rem=True) in p
+    at = (dt.datetime.now() + dt.timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+    a.ctx.reminders = type("R", (), {"add": lambda *x: None})()
+    assert REGISTRY["set_reminder"].handler(a.ctx, at=at.isoformat(), kind="alarm") in p
+    from rem.brain import REM_STYLE
+    for said in re.findall(r"ответ: «(.+?)»", REM_STYLE):
+        assert said in p, said

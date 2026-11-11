@@ -251,3 +251,10 @@ def test_voiceclips_fixed_phrases_are_what_rem_says(tmp_path):
     from rem.brain import REM_STYLE
     for said in re.findall(r"ответ: «(.+?)»", REM_STYLE):
         assert said in p, said
+
+
+def test_voiceclips_all_recorded():
+    """Каждая фраза из списка записана голосом Рэм (иначе — voice/design.py pack --missing)."""
+    from rem import voiceclips
+    missing = [t for t in voiceclips.phrases() if not voiceclips.clip(t)]
+    assert not missing, missing

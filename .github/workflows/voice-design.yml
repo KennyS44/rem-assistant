@@ -33,7 +33,9 @@ jobs:
           python-version: "3.11"
       - name: Зависимости
         run: |
-          sudo apt-get install -y sox libsox-fmt-all > /dev/null
+          # sox нужен только для предупреждений qwen-tts; сбой зеркала Ubuntu не должен ронять запись
+          sudo apt-get update -qq || true
+          sudo apt-get install -y sox libsox-fmt-all > /dev/null || echo "sox не установился — продолжаю без него"
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install soundfile numpy
           if [ "${{ inputs.engine }}" = vox ]; then pip install voxcpm; else pip install qwen-tts ruaccent onnx-asr onnxruntime rapidfuzz; fi

@@ -48,6 +48,7 @@ class Skill:
     # что стало после действия (ctx, **args) → текст: модель видит его, если действие выбрала она;
     # пустая строка — смотреть не на что
     observe: Optional[Callable[..., str]] = None
+    model: bool = True             # False — только быстрым путём: модель этого умения не видит
 
     def args_schema(self) -> dict:
         return {
@@ -79,10 +80,11 @@ REGISTRY: dict[str, Skill] = {}
 
 
 def skill(name: str, title: str, description: str, *, params=(), examples=(),
-          confirm: bool = False, category: str = "Прочее", retell: bool = False, observe=None):
+          confirm: bool = False, category: str = "Прочее", retell: bool = False, observe=None,
+          model: bool = True):
     """Декоратор: регистрирует функцию как умение."""
     def wrap(fn):
         REGISTRY[name] = Skill(name, title, description, fn, list(params), list(examples),
-                               confirm, category, retell, observe)
+                               confirm, category, retell, observe, model)
         return fn
     return wrap

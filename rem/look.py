@@ -21,7 +21,7 @@ ART = Path(__file__).parent / "art"
 
 STATE_COLORS = {
     "idle": "#4f7dd9", "listening": "#2fb36e", "thinking": "#e0a72e",
-    "paused": "#8a8f98", "game": "#9b6bd6", "error": "#d9534f",
+    "paused": "#8a8f98", "game": "#9b6bd6", "error": "#d9534f", "dictating": "#2fb36e",
 }
 
 # тема «Рем»: голубой, белый, тёмно-синий. Контраст текста к фону ≥ 4.5:1

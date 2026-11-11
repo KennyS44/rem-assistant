@@ -132,16 +132,25 @@ def pick_input(wanted: str | None) -> int | None:
 
 
 class Microphone:
-    """Поток с микрофона кусками по 100 мс, 16 кГц, моно, int16."""
+    """Поток с микрофона кусками по 100 мс, 16 кГц, моно, int16.
+    last_t — когда записано начало последнего прочитанного куска (time.monotonic):
+    по нему эхоподавитель сопоставляет микрофон с голосом Рэм."""
 
     def __init__(self, device=None):
         self.device = device
-        self.q: queue.Queue[np.ndarray] = queue.Queue(maxsize=600)   # не больше минуты
+        self.q: queue.Queue[tuple[float, np.ndarray]] = queue.Queue(maxsize=600)   # не больше минуты
         self.stream = None
+        self.last_t = 0.0
 
     def _cb(self, data, frames, t, status):
+        ago = frames / RATE                         # кусок кончился только что
         try:
-            self.q.put_nowait(np.frombuffer(data, dtype=np.int16).copy())
+            if t.currentTime > 0 and 0 < t.currentTime - t.inputBufferAdcTime < 1:
+                ago = t.currentTime - t.inputBufferAdcTime    # точнее: когда записан первый отсчёт
+        except Exception:
+            pass
+        try:
+            self.q.put_nowait((time.monotonic() - ago, np.frombuffer(data, dtype=np.int16).copy()))
         except queue.Full:
             pass
 
@@ -159,7 +168,8 @@ class Microphone:
 
     def read(self, timeout: float = 1.0) -> np.ndarray | None:
         try:
-            return self.q.get(timeout=timeout)
+            self.last_t, chunk = self.q.get(timeout=timeout)
+            return chunk
         except queue.Empty:
             return None
 
@@ -274,17 +284,20 @@ class NoiseFloor:
 
 def record_phrase(mic: Microphone, noise: NoiseFloor | None = None, max_wait: float = 5.0,
                   max_len: float = 10.0, silence: float = 0.8,
-                  already_speaking: bool = False) -> np.ndarray | None:
+                  already_speaking: bool = False, clean=None) -> np.ndarray | None:
     """Пишет речь до паузы в silence секунд.
 
     already_speaking=False — сначала ждёт начала речи до max_wait секунд;
     already_speaking=True — человек уже говорит (дослушиваем фразу после сторожа).
+    clean — очистка куска (эхоподавление).
     """
     noise = noise or NoiseFloor()
     started, quiet, chunks = already_speaking, 0.0, []
     t0 = time.monotonic()
     while True:
         c = mic.read(timeout=0.5)
+        if c is not None and clean is not None:
+            c = clean(c)
         if c is None:
             if (not started and time.monotonic() - t0 > max_wait) or (started and quiet >= silence):
                 break
@@ -303,39 +316,152 @@ def record_phrase(mic: Microphone, noise: NoiseFloor | None = None, max_wait: fl
     return np.concatenate(chunks) if chunks else None
 
 
+# «Рэм, хватит» поверх ответа — просто замолчать
+STOP_WORDS = {"стоп", "хватит", "замолчи", "молчи", "помолчи", "тихо", "тише", "достаточно",
+              "все", "понятно", "ясно", "спасибо", "отмена", "не надо"}
+
+
+def is_stop(text: str) -> bool:
+    t = " ".join(re.sub(r"[^а-яё ]", " ", text.lower()).replace("ё", "е").split())
+    return t in STOP_WORDS or (bool(t) and all(w in STOP_WORDS for w in t.split()))
+
+
 class Listener:
     """Склеивает всё вместе. listen() блокирует поток и вызывает колбэки."""
 
     def __init__(self, vosk_model, asr: ASR, wake: str, mic: Microphone,
-                 speakers=None, mute: threading.Event | None = None):
+                 speakers=None, mute: threading.Event | None = None, echo=None, voice=None):
         self.vosk_model = vosk_model
         self.asr = asr
         self.mic = mic
         self.speakers = speakers                # echo.SpeakerTap — что играет в колонках
-        self.mute = mute                        # пока Рэм говорит сам — не слушаем
+        self.mute = mute                        # пока Рэм говорит сама — без эхоподавления не слушаем
+        self.echo = echo                        # aec.EchoCanceller — слышать человека поверх голоса Рэм
+        self.voice = voice                      # speech.Voice — замолчать, когда перебили
+        self.barge_in = True                    # настройка «перебивать голосом»
+        self.barge_partial = True               # замолкать по промежуточному результату сторожа
         self.paused = threading.Event()
         self.stopped = threading.Event()
         self.noise = NoiseFloor()
-        self.stats = {"guard": 0, "accepted": 0, "rejected": 0, "speakers": 0}
+        self.stats = {"guard": 0, "accepted": 0, "rejected": 0, "speakers": 0, "barge": 0}
         self.set_wake(wake)
 
     def set_wake(self, wake: str) -> None:
         self.wake = wake.lower().strip()
         self.guard = WakeGuard(self.vosk_model, self.wake)
+        self.bguard = WakeGuard(self.vosk_model, self.wake)      # сторож поверх голоса Рэм
+
+    # ——— перебивание ———
+
+    def _clean(self, chunk: np.ndarray) -> np.ndarray:
+        """Кусок микрофона без голоса Рэм (если она говорит и есть эхоподавитель)."""
+        if self.echo is None or not self.echo.ok:
+            return chunk
+        out = self.echo.process(chunk, self.mic.last_t)          # непрерывно: следит за комнатой
+        return out if self.echo.active() else chunk
+
+    def can_barge(self) -> bool:
+        return bool(self.barge_in and self.echo is not None and self.echo.ready and self.voice is not None)
+
+    def _barge_feed(self, chunk: np.ndarray) -> str | None:
+        """Рэм говорит, chunk уже очищен от её голоса. Человек сказал «Рэм» → она замолкает
+        и дослушивает уже в тишине. → текст команды («» — только имя) или None.
+
+        Замер: сторож по промежуточному результату срабатывает через ~0,2 с после «Рэм»,
+        поэтому команда звучит уже без её голоса. GigaAM слово «Рэм», сказанное поверх голоса,
+        часто не узнаёт — тогда команда берётся из того, что сказано после остановки."""
+        if self.echo is None or not self.echo.ready:
+            return None                         # эхоподавитель ещё не подстроился под комнату
+        g = self.bguard
+        g.buf.append(chunk)
+        g.buf_len += len(chunk)
+        while g.buf_len > g.MAX_UTTERANCE:
+            g.buf_len -= len(g.buf.popleft())
+        final = g.rec.AcceptWaveform(chunk.tobytes())
+        if not final and not self.barge_partial:
+            return None
+        words = (json.loads(g.rec.Result()).get("text", "") if final
+                 else json.loads(g.rec.PartialResult()).get("partial", "")).split()
+        if self.wake not in words:
+            if final:
+                g.buf.clear()
+                g.buf_len = 0
+            return None
+        audio = np.concatenate(g.buf)
+        own = self.voice.recent(2.0)            # что она говорила, пока звучало слово (сторож отстаёт ≤ 2 с)
+        says_wake = _norm(self.wake) in {_norm(w) for w in own.split()}
+        if says_wake and (not final or self.speakers is None):
+            return None                         # «Рэм всё сделала» — сама произносит имя: не верим
+        if says_wake:                           # …пока колонки не покажут, что это не она
+            heard = self.speakers.recent(len(audio) / RATE + 0.5)
+            if wake_from_speakers(self.asr, heard, self.wake, self.is_word):
+                log.info("перебивание: «Рэм» из колонок — это она сама")
+                g.reset()
+                return None
+        self.voice.stop()
+        self.stats["barge"] += 1
+        g.reset()
+        time.sleep(0.15)                        # хвост её голоса в комнате
+        tail = record_phrase(self.mic, self.noise, max_wait=2.0, max_len=8, silence=0.7,
+                             already_speaking=not final, clean=self._clean)
+        whole = np.concatenate([audio, tail]) if tail is not None else audio
+        text = self.asr.recognize(whole)
+        ok, command = find_wake(text, self.wake, self.is_word)
+        if not ok:
+            command = self.asr.recognize(tail) if tail is not None else ""
+        if not command.strip(" .,!?"):          # «Рэм, …» и пауза — ждём саму команду
+            more = record_phrase(self.mic, self.noise, max_wait=1.5, max_len=8, silence=0.7, clean=self._clean)
+            command = self.asr.recognize(more) if more is not None else ""
+        log.info("перебили: «%s» → «%s»", text, command)
+        return command
+
+    def wait_speaking(self) -> str | None:
+        """Пока Рэм говорит — слушать, не перебьют ли. → команда (как _barge_feed) или None."""
+        self.mic.flush()                        # то, что накопилось, пока она думала
+        self.bguard.reset()
+        raw = cleaned = 0.0
+        try:
+            while self.voice.speaking.is_set() and not self.stopped.is_set():
+                chunk = self.mic.read(timeout=0.3)
+                if chunk is None or self.paused.is_set():
+                    continue
+                clean = self._clean(chunk)
+                raw += float(np.sum(chunk.astype(np.float64) ** 2))
+                cleaned += float(np.sum(clean.astype(np.float64) ** 2))
+                self.noise.update(clean)
+                got = self._barge_feed(clean)
+                if got is not None:
+                    return got
+            return None
+        finally:
+            if raw > 0 and cleaned > 0:         # для отчёта с компьютера: работает ли эхоподавление
+                log.info("эхо её голоса ослаблено на %.0f дБ", 10 * np.log10(raw / cleaned))
 
     def is_word(self, w: str) -> bool:
         return self.vosk_model.vosk_model_find_word(w) >= 0
 
-    def listen(self, on_command, on_wake_only, on_rejected=None) -> None:
+    def listen(self, on_command, on_wake_only, on_rejected=None, on_stop=None) -> None:
         deaf_until = 0.0
+        speaking = False
         while not self.stopped.is_set():
             chunk = self.mic.read(timeout=0.5)
             if chunk is None:
                 continue
             if self.paused.is_set():
                 continue
+            chunk = self._clean(chunk)
             if self.mute is not None and self.mute.is_set():
+                if self.can_barge():             # Рэм говорит сама (таймер) — но её можно перебить
+                    if not speaking:
+                        self.bguard.reset()
+                        speaking = True
+                    got = self._barge_feed(chunk)
+                    if got is not None:
+                        speaking = False
+                        self._dispatch(got, on_command, on_wake_only, on_stop)
+                    continue
                 deaf_until = time.monotonic() + 0.4      # и хвост эха после фразы
+            speaking = False
             if time.monotonic() < deaf_until:
                 self.guard.reset()
                 continue
@@ -370,6 +496,17 @@ class Listener:
                 on_wake_only()
             self.guard.reset()
             self.mic.flush()
+
+    def _dispatch(self, command: str, on_command, on_wake_only, on_stop=None) -> None:
+        if is_stop(command):
+            if on_stop:
+                on_stop()
+        elif command:
+            on_command(command)
+        else:
+            on_wake_only()
+        self.guard.reset()
+        self.mic.flush()
 
     def hear_command(self) -> str:
         """После «голого» слова активации: записать и распознать команду."""

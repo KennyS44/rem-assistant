@@ -103,7 +103,9 @@ def speed_up_wav(path, k: float) -> None:
 
 
 class Voice:
-    """Озвучка в отдельном потоке. speaking — пока говорит (микрофон в это время глухой).
+    """Озвучка в отдельном потоке. speaking — пока говорит. stop() — замолчать на полуслове
+    (перебили). Всё звучит через play_wav: копия звука идёт эхоподавителю (echo), чтобы
+    микрофон слышал человека поверх голоса Рэм.
 
     Два движка: голос Windows (SAPI) и нейроголос Silero (отдельная программа RemVoice,
     см. voicepack.py). Если нейроголос не запустился — говорим голосом Windows.
@@ -118,6 +120,10 @@ class Voice:
         self.voices: list[str] = []
         self.ready = threading.Event()
         self.neural = None                      # voicepack.NeuralVoice, когда включён
+        self.echo = None                        # aec.EchoCanceller — ему копия звука
+        self.current = ""                       # что говорит сейчас
+        self._said: list[tuple[float, str]] = []   # (когда закончила, фраза) — недавние
+        self._stop = threading.Event()
         self.on_problem = lambda text: None     # сообщить человеку (уведомление в трее)
         threading.Thread(target=self._run, name="voice", daemon=True).start()
 
@@ -140,6 +146,27 @@ class Voice:
     def wait(self, timeout: float = 15) -> None:
         """Дождаться окончания речи."""
         self.q.join()
+
+    def recent(self, seconds: float) -> str:
+        """Что она говорит сейчас и говорила за последние seconds секунд."""
+        import time
+        now = time.monotonic()
+        return " ".join([t for end, t in self._said if now - end < seconds] + [self.current])
+
+    def stop(self) -> None:
+        """Замолчать: текущая фраза обрывается, очередь выбрасывается."""
+        while True:
+            try:
+                item = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None and item[0] == "config":
+                self.cfg = item[1]                  # настройки не теряем
+            self.q.task_done()
+        self._stop.set()
+        if self.echo is not None and self.echo.ok:
+            import time
+            self.echo.silence_from(time.monotonic())
 
     # ——— поток озвучки ———
 
@@ -171,10 +198,17 @@ class Voice:
                         self.neural = None
                     continue
                 _, text, override = item
+                self._stop.clear()
+                self.current = text
                 self._speak(text, {**self.cfg, **override} if override else self.cfg)
             except Exception as e:
                 log.warning("ошибка озвучки: %s", e)
             finally:
+                if self.current:
+                    import time
+                    self._said = [x for x in self._said if time.monotonic() - x[0] < 30]
+                    self._said.append((time.monotonic(), self.current))
+                self.current = ""
                 self.q.task_done()
                 if self.q.empty():
                     self.speaking.clear()
@@ -201,7 +235,8 @@ class Voice:
             clips = clips_for(text)
             if clips:                               # частая фраза — готовая запись голосом Рем
                 for c in clips:
-                    play_wav(c)
+                    if not self._play(c):
+                        break
                 return
         pitch, rate = int(cfg.get("voice_pitch", 0)), int(cfg.get("voice_rate", 100))
         if cfg.get("voice_engine") == "silero" and self._speak_neural(text, cfg, pitch, rate):
@@ -212,7 +247,34 @@ class Voice:
         from xml.sax.saxutils import escape
         p, r = sapi_params(pitch, rate)
         self.sapi.Rate = r
-        self.sapi.Speak(f'<pitch absmiddle="{p}"/>{escape(text)}', 8)   # 8 — текст с XML-разметкой
+        xml = f'<pitch absmiddle="{p}"/>{escape(text)}'
+        try:                                     # в файл, а играем сами — чтобы можно было перебить
+            path = self._sapi_to_wav(xml)
+        except Exception as e:
+            log.warning("голос Windows в файл: %s", e)
+            self.sapi.AudioOutputStream = None
+            self.sapi.Speak(xml, 8)               # 8 — текст с XML-разметкой
+            return
+        self._play(path)
+
+    def _sapi_to_wav(self, xml: str):
+        import tempfile
+        import win32com.client
+        path = Path(tempfile.gettempdir()) / "rem-sapi.wav"
+        fmt = win32com.client.Dispatch("SAPI.SpAudioFormat")
+        fmt.Type = 22                             # 22 кГц, 16 бит, моно
+        stream = win32com.client.Dispatch("SAPI.SpFileStream")
+        stream.Format = fmt
+        stream.Open(str(path), 3)                 # 3 — создать для записи
+        try:
+            self.sapi.AudioOutputStream = stream
+            self.sapi.Speak(xml, 8)
+        finally:
+            stream.Close()
+        return path
+
+    def _play(self, path) -> bool:
+        return play_wav(path, self._stop, self.echo)
 
     def _speak_neural(self, text: str, cfg: dict, pitch: int, rate: int) -> bool:
         from . import voicepack
@@ -235,14 +297,60 @@ class Voice:
             self.neural.close()
             self.neural = None
             return False
-        play_wav(wav)
+        self._play(wav)
         return True
 
 
-def play_wav(path) -> None:
-    """Проиграть WAV и дождаться конца."""
+def read_wav(path) -> tuple[np.ndarray, int, int]:
+    """→ (int16 отсчёты, каналов, частота)."""
+    with wave.open(str(path), "rb") as w:
+        return (np.frombuffer(w.readframes(w.getnframes()), "<i2"), w.getnchannels(), w.getframerate())
+
+
+def play_wav(path, stop: threading.Event | None = None, echo=None) -> bool:
+    """Проиграть WAV и дождаться конца. stop — оборвать на полуслове (→ False).
+    echo — эхоподавитель: ему копия звука с моментом, когда он прозвучит."""
     if not IS_WINDOWS:
         log.info("проиграл бы %s", path)
-        return
-    import winsound
-    winsound.PlaySound(str(path), winsound.SND_FILENAME)
+        return True
+    try:
+        return _play_stream(path, stop, echo)
+    except Exception as e:                     # нет устройства вывода и т. п. — как раньше
+        log.debug("проигрыватель: %s — играю через winsound", e)
+    try:
+        import winsound
+        winsound.PlaySound(str(path), winsound.SND_FILENAME)
+    except Exception as e:
+        log.warning("звук не проигрался: %s", e)
+    return True
+
+
+def _play_stream(path, stop, echo) -> bool:
+    import time
+
+    import sounddevice as sd
+
+    from .aec import LEAD_S
+    from .echo import to_mono_16k
+    pcm, channels, rate = read_wav(path)
+    pcm = pcm[: len(pcm) // channels * channels]
+    ref = to_mono_16k(pcm.tobytes(), channels, rate) if echo is not None and echo.ok else None
+    step = rate // 50                               # по 20 мс
+    frames = len(pcm) // channels
+    with sd.OutputStream(samplerate=rate, channels=channels, dtype="int16") as out:
+        t0 = None
+        for i in range(0, frames, step):
+            if stop is not None and stop.is_set():
+                out.abort()                         # выброшено и то, что уже в буфере
+                return False
+            out.write(pcm[i * channels:(i + step) * channels].reshape(-1, channels))
+            if stop is not None and stop.is_set():
+                out.abort()
+                return False
+            if ref is not None:
+                # записанное зазвучит через out.latency; эхоподавителю копия нужна чуть раньше эха
+                if t0 is None:
+                    t0 = time.monotonic() + max(0.0, float(out.latency) - LEAD_S)
+                a, b = round(i * 16000 / rate), round(min(i + step, frames) * 16000 / rate)
+                echo.played(ref[a:b], t0 + a / 16000)
+    return True                                     # выход из with дожидается хвоста буфера

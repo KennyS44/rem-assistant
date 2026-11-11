@@ -27,6 +27,8 @@ DEFAULTS: dict = {
     "speak_replies": True,
     "mic_device": None,           # имя микрофона; None — вход Windows по умолчанию
     "ignore_speakers": True,      # не реагировать на «Рэм» из колонок (фильмы, видео)
+    "barge_in": True,             # «Рэм, …» поверх её ответа — замолкает и слушает
+    "learn_phrases": True,        # понятые моделью команды выполнять потом сразу, без неё
     "auto_update": True,          # проверять и скачивать обновления
     "rem_theme": True,            # голубая тема окон; False — обычный вид Windows
     "reply_card": True,           # «Слушаю…» и ответ карточкой у края экрана

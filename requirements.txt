@@ -10,3 +10,4 @@ comtypes>=1.4
 pywin32>=306; sys_platform == "win32"
 pyaudiowpatch>=0.2.12; sys_platform == "win32"
 psutil>=5.9
+livekit==1.2.1                  # эхоподавление WebRTC AEC3 — Рэм можно перебить голосом

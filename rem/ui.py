@@ -18,7 +18,7 @@ from .skills import REGISTRY
 
 STATE_TEXT = {
     "idle": "слушаю", "listening": "слышу команду", "thinking": "выполняю",
-    "paused": "на паузе", "game": "игровой режим", "error": "ошибка",
+    "paused": "на паузе", "game": "игровой режим", "error": "ошибка", "dictating": "диктовка",
 }
 
 PAD = 8
@@ -78,10 +78,11 @@ class UI:
         """Карточка показывает, что Рэм услышала, пока она слушает и думает."""
         if not self.app.config.get("reply_card", True):
             return
-        if state in ("listening", "thinking"):
+        if state in ("listening", "thinking", "dictating"):
             if state == "thinking" and not (self.card and self.card.visible() and self.card_status):
                 return                          # команда текстом или таймер — без «Думаю…»
-            text = {"listening": "Слушаю…", "thinking": "Думаю…"}[state]
+            text = {"listening": "Слушаю…", "thinking": "Думаю…",
+                    "dictating": "Пишу под диктовку… «Хватит» — закончить."}[state]
             if self._card().show(text):
                 self.card_status = True
         elif self.card and self.card_status:
@@ -516,6 +517,12 @@ class SettingsWindow:
         row("", ttk.Checkbutton(f, text="Не реагировать на «Рэм» из колонок" + state,
                                 variable=self.ignore_speakers),
             "Например, «Рем» в аниме. Свой голос Рэм тоже не слушает.")
+        self.barge = tk.BooleanVar(value=self.cfg.get("barge_in", True))
+        ec = getattr(getattr(self.app, "voice", None), "echo", None)
+        state = " — сейчас недоступно" if ec is not None and not ec.ok else ""
+        row("", ttk.Checkbutton(f, text="Можно перебить: «Рэм, …» поверх ответа" + state,
+                                variable=self.barge),
+            "Рэм замолкает и слушает новую команду. «Рэм, хватит» — просто замолчать.")
         return f
 
     @staticmethod
@@ -880,6 +887,7 @@ class SettingsWindow:
         mic = self.mic.get()
         c["mic_device"] = None if mic == self.mic_auto else mic.removesuffix("  — не микрофон")
         c["ignore_speakers"] = bool(self.ignore_speakers.get())
+        c["barge_in"] = bool(self.barge.get())
         c["auto_update"] = bool(self.auto_update.get())
         c["disabled_skills"] = [n for n, (on, _, _) in self.skill_vars.items() if not on.get()]
         c["confirm_overrides"] = {n: ask.get() for n, (_, ask, default) in self.skill_vars.items()

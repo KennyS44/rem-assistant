@@ -81,6 +81,7 @@ class App:
     def _boot(self) -> None:
         """Подготовка в фоне: модели речи, Ollama, микрофон — и в работу."""
         from . import models
+        from .aec import EchoCanceller
         from .echo import SpeakerTap
         from .listen import ASR, Listener, Microphone, pick_input
 
@@ -109,14 +110,17 @@ class App:
         self.speakers = SpeakerTap()
         if self.config.get("ignore_speakers", True):
             self.speakers.start()
+        echo = EchoCanceller()                 # перебивание: человека слышно поверх голоса Рэм
+        self.voice.echo = echo
         self.listener = Listener(vmodel, asr, self.config["wake_word"], mic,
                                  speakers=self.speakers if self.speakers.available else None,
-                                 mute=self.voice.speaking)
+                                 mute=self.voice.speaking, echo=echo, voice=self.voice)
+        self.listener.barge_in = bool(self.config.get("barge_in", True))
         self.assistant.listener = self.listener
         self.ui.call(self.ui.start_tray)
         threading.Thread(target=self.assistant.watch_game_mode, args=(self.stop,), daemon=True).start()
         threading.Thread(target=self.listener.listen, name="listen", daemon=True,
-                         args=(self._on_command, self._on_wake_only, None)).start()
+                         args=(self._on_command, self._on_wake_only, None, self._on_stop)).start()
         self.log.info("Рэм %s слушает, слово активации «%s»", __version__, self.config["wake_word"])
         self.ui.call(self.ui.notify, f"Рэм запущен. Скажи «{self.config['wake_word'].capitalize()}» и команду.")
         threading.Thread(target=self._update_loop, name="update", daemon=True).start()
@@ -203,19 +207,11 @@ class App:
     def _on_wake_only(self) -> None:
         if self.test_mode:
             return
-        self._set_state("listening")
-        if self.config.get("rem_style"):
-            self.voice.say("Рэм слушает.")
-            self.voice.wait()
-            self.listener.mic.flush()
-        else:
-            self.sounds.play("wake")
-        self.assistant.prewarm()                # пока человек говорит — грузим модель
-        command = self.listener.hear_command()
-        if command:
-            self.assistant.handle(command)
-        else:
-            self._set_state("game" if self.assistant.game_mode else "idle")
+        self.assistant.wake_only()
+
+    def _on_stop(self) -> None:
+        """«Рэм, хватит» поверх её речи (например, таймера) — она уже замолчала."""
+        self._set_state("game" if self.assistant.game_mode else "idle")
 
     # ——— управление ———
 
@@ -247,6 +243,7 @@ class App:
         self.voice.configure(self.config)
         if self.listener:
             self.listener.set_wake(self.config["wake_word"])
+            self.listener.barge_in = bool(self.config.get("barge_in", True))
             if old.get("mic_device") != self.config.get("mic_device"):
                 self._switch_mic()
             if old.get("ignore_speakers", True) != self.config.get("ignore_speakers", True):
@@ -377,12 +374,29 @@ def selftest(report: str | None = None) -> int:
         p = Path(d) / "c.json"
         cfgmod.save({**cfg, "wake_word": "пятница"}, p)
         check("настройки сохраняются", cfgmod.load(p)["wake_word"] == "пятница")
+        from .phrasebook import Phrasebook
+        book = Phrasebook(Path(d) / "phrasebook.json")
+        book.learn("Включи что-нибудь спокойное", [("open_site", {"url": "music.yandex.ru"})])
+        check("выученная команда сохраняется", Phrasebook(Path(d) / "phrasebook.json").get(
+            "включи что-нибудь спокойное!") == [("open_site", {"url": "music.yandex.ru"})])
+    from .aec import self_check
+    db = self_check()
+    check(f"эхоподавление (эхо тише на {db:.0f} дБ)", db >= 20)
+    from .dictation import Dictation
+    typed: list[str] = []
+    dic = Dictation(typed.append, lambda: typed.append("\n"), lambda n: typed.append(f"<{n}>"))
+    for said in ("Привет.", "Новая строка.", "Лишнее.", "Сотри последнее.", "Пока. Хватит."):
+        if not dic.feed(said):
+            break
+    check("диктовка: строка, стереть, «хватит»", typed == ["Привет.", "\n", "Лишнее.", "<7>", "Пока."])
+    check("диктовка — только быстрым путём", fp.match("записывай").actions == [("dictation", {})]
+          and "dictation" not in build_system_prompt([s for s in skills if s.model]))
     if winapi.IS_WINDOWS:
         check("папка «Загрузки» находится", bool(winapi.known_folder("downloads")))
         check("проверка полноэкранного окна", winapi.foreground_is_fullscreen() in (True, False))
         import importlib
         for mod in ("vosk", "onnx_asr", "onnxruntime", "sounddevice", "pystray", "pycaw.pycaw",
-                    "comtypes.client", "psutil", "PIL.ImageGrab", "pyaudiowpatch"):
+                    "comtypes.client", "psutil", "PIL.ImageGrab", "pyaudiowpatch", "livekit.rtc"):
             try:
                 importlib.import_module(mod)
                 check(f"модуль {mod}", True)
@@ -622,8 +636,107 @@ def speech_test(wavs: list[str], report: str | None = None) -> int:
         ok = ok and good
         emit(f"{'OK  ' if good else 'FAIL'} {Path(path).name} из колонок: "
              f"{'слово найдено — не реагирую' if echo else 'слова нет'}; тихие колонки не мешают: {not quiet}")
+    # перебивание: «Рэм, открой браузер» поверх её собственного голоса (готовые фразы)
+    from .aec import EchoCanceller
+    from .speech import read_wav
+    from .voiceclips import CLIPS
+    if not EchoCanceller().ok:
+        ok = False
+        emit("FAIL эхоподавление не загрузилось")
+    else:
+        from .echo import to_mono_16k
+        from .voiceclips import clip, phrases
+        names = {clip(t).name: t for t in phrases() if clip(t)}
+        parts, said, t = [], [], 0.0
+        for c in sorted(CLIPS.glob("*.wav"))[:10]:
+            pcm, ch, rate = read_wav(c)
+            a = to_mono_16k(pcm.tobytes(), ch, rate)
+            said.append((t, t + len(a) / 16000, names.get(c.name, "")))
+            parts += [a, np.zeros(2400, dtype=np.int16)]
+            t += (len(a) + 2400) / 16000
+        far = np.concatenate(parts).astype(np.float64)
+        wake = [p for p in wavs if Path(p).name.startswith("wake")]
+        if wake:
+            with wave.open(wake[0]) as w:
+                near = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float64)
+            got, when = barge_case(vm, asr, far, near * 0.7, at=13.0, said=said)
+            good = got is not None and "браузер" in got.lower() and when is not None and when >= 13.0
+            ok = ok and good
+            emit(f"{'OK  ' if good else 'FAIL'} перебивание: «{got}», замолчала через "
+                 f"{'-' if when is None else f'{when - 13.0:.1f}'} с после начала фразы")
+        got, when = barge_case(vm, asr, far, far[:0], at=None, said=said)
+        good = got is None
+        ok = ok and good
+        emit(f"{'OK  ' if good else 'FAIL'} свой голос не перебивает: {'да' if good else f'«{got}» на {when} с'}")
     emit("ИТОГ: " + ("речь работает" if ok else "есть ошибки"))
     return 0 if ok else 1
+
+
+def barge_case(vm, asr, far, near, at: float | None, delay_ms: int = 120, said=()):
+    """Перебивание без колонок и микрофона: «комната» складывает голос Рэм (far, с эхом через
+    delay_ms) и человека (near с момента at). Рэм замолкает, когда её перебили, — дальше в
+    «микрофоне» только человек. said — (начало, конец, текст) её фраз.
+    → (что услышано или None, когда сработало — с от начала)."""
+    import threading
+    import time
+
+    import numpy as np
+
+    from .aec import EchoCanceller
+    from .listen import CHUNK, RATE, Listener
+
+    h = np.zeros(int(delay_ms * RATE / 1000) + 800)
+    d = int(delay_ms * RATE / 1000)
+    h[d], h[d + 110], h[d + 300], h[d + 650] = 0.7, 0.3, 0.18, 0.1
+    echo_sig = np.convolve(far.astype(np.float64), h)[: len(far)]
+    rng = np.random.default_rng(0)
+    base = time.monotonic() + 1.0
+    ec = EchoCanceller()
+    ec.played(far.astype(np.int16), base)
+
+    class Voice:
+        speaking = threading.Event()
+
+        def recent(self, seconds):
+            t = mic.pos / RATE
+            return " ".join(text for a, b, text in said if a <= t and b > t - seconds)
+
+        def stop(self):
+            self.stopped_at = mic.pos / RATE
+            self.speaking.clear()
+            ec.silence_from(base + self.stopped_at)
+
+    class Mic:
+        pos = 0
+        last_t = base
+
+        def read(self, timeout=0.5):
+            i = self.pos
+            if i >= len(far) + 6 * RATE:
+                return None
+            n = np.arange(i, i + CHUNK)
+            x = rng.standard_normal(CHUNK) * 30
+            stop = getattr(voice, "stopped_at", None)
+            live = n < len(far) if stop is None else n < min(len(far), int(stop * RATE))
+            x[live] += echo_sig[n[live]]
+            if at is not None:
+                k = n - int(at * RATE)
+                ok = (k >= 0) & (k < len(near))
+                x[ok] += near[k[ok]]
+            if i + CHUNK >= len(far):
+                voice.speaking.clear()               # договорила
+            self.last_t = base + i / RATE
+            self.pos = i + CHUNK
+            return np.clip(x, -32768, 32767).astype(np.int16)
+
+        def flush(self):
+            pass
+
+    voice, mic = Voice(), Mic()
+    voice.speaking.set()
+    lst = Listener(vm, asr, "рэм", mic, echo=ec, voice=voice)
+    got = lst.wait_speaking()
+    return got, getattr(voice, "stopped_at", None)
 
 
 def voice_test(report: str | None = None) -> int:

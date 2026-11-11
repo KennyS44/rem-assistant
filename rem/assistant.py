@@ -13,7 +13,8 @@ from typing import Callable
 from . import winapi
 from .brain import CLICK_HINT, Brain, Ollama, Plan, claims_done, windows_context
 from .config import app_dir
-from .fastpath import FastPath
+from .fastpath import FastPath, clean
+from .phrasebook import FORGET_ALL, UNDO, Phrasebook, learnable
 from .skills import active_skills
 from .skills.base import Cancelled, NotHere
 from .skills import screen
@@ -35,6 +36,7 @@ class Context:
     timers: Timers
     say: Callable[[str], None]
     confirm: Callable[[str], bool] = lambda question: False     # «да/нет» голосом — опасная кнопка
+    dictate: Callable[[], str] = lambda: "Диктовка работает только с микрофоном."
 
 
 class Assistant:
@@ -47,7 +49,8 @@ class Assistant:
         self.client = client or Ollama(config.get("ollama_url"))
         self.apps = apps or AppIndex()
         self.timers = Timers(self._timer_done)
-        self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q))
+        self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q),
+                           lambda: self.dictate())
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
         self.notify_cb: Callable[[str], None] = lambda s: None
@@ -56,6 +59,8 @@ class Assistant:
         self.recent: deque = deque(maxlen=4)       # (когда, команда, результаты, ответ) — память разговора
         self._failed = ""
         self.journal = app_dir() / "actions.log"
+        self.book = Phrasebook(app_dir() / "phrasebook.json")
+        self.last: tuple[str, str] = ("", "")     # прошлая команда и откуда план — для «не то»
         self.reload()
 
     # ——— настройка ———
@@ -65,7 +70,7 @@ class Assistant:
         self.skills = active_skills(self.config)
         self.by_name = {s.name: s for s in self.skills}
         self.fast = FastPath(self.skills, self.apps)
-        self.brain = Brain(self.config, self.skills, self.client)
+        self.brain = Brain(self.config, [s for s in self.skills if s.model], self.client)
 
     def say(self, text: str) -> None:
         if self.voice and self.config.get("speak_replies", True):
@@ -130,6 +135,10 @@ class Assistant:
         fast = self.fast.match(text) if fast_ok else None
         if fast:
             return fast
+        if fast_ok and self.config.get("learn_phrases", True):
+            learned = self.book.get(text)
+            if learned and all(n in self.by_name for n, _ in learned):
+                return Plan(actions=learned, source="learned")
         context = self.context()
         if self.game_mode:
             # облако видеокарту не трогает — во время игры им можно пользоваться как обычно
@@ -200,9 +209,16 @@ class Assistant:
         """Выполнить команду. dry_run — только показать план.
         Если умение вернуло данные (поиск файлов, вывод команды), модель видит их и решает,
         что дальше: ещё действие или ответ. Не больше MAX_STEPS шагов."""
+        special = self._special(text)
+        if special is not None:
+            if not dry_run:
+                self.say(special)
+                self._wait_voice()
+            return Plan(reply=special, source="fast")
         self.status_cb("thinking")
         t0 = time.perf_counter()
         plan = first = self.plan(text)
+        steps = 0
         replies, results = [], []
         if plan.error:
             log.warning("модель: %s", plan.error)
@@ -215,10 +231,14 @@ class Assistant:
         for _ in range(MAX_STEPS):
             if plan.reply:
                 replies.append(plan.reply)
+            steps += 1
             try:
                 done, more = self._run(plan, dry_run, replies, results)
             except NotHere:                            # быстрый путь не подошёл — спрашиваем модель
+                if plan.source == "learned":
+                    self.book.forget(text)
                 plan = first = self.plan(text, fast_ok=False)
+                steps = 0                              # считаем шаги заново — уже ответа модели
                 if plan.error:
                     replies.append("Не удалось понять команду.")
                     break
@@ -246,6 +266,7 @@ class Assistant:
         spoken = " ".join(dict.fromkeys(replies))
         self._write_journal(text, first, results, time.perf_counter() - t0, spoken)
         if not dry_run:
+            self._learn(text, first, results, steps)
             self.recent.append((time.monotonic(), text, results, spoken))
             if spoken:
                 self.say(spoken)
@@ -255,10 +276,107 @@ class Assistant:
                 self._sound("done")
             else:
                 self._sound("error")
-            if self.voice:
-                self.voice.wait()
+            self._wait_voice()
         self.status_cb("game" if self.game_mode else "idle")
         return first
+
+    # ——— выученные команды ———
+
+    def _learn(self, text: str, first: Plan, results: list, steps: int) -> None:
+        """Модель поняла команду с одного раза и всё получилось — запомнить (phrasebook.py)."""
+        self.last = (text, first.source)
+        ok = results and all(st == "ок" for _, _, st in results) and len(results) == len(first.actions)
+        if first.source == "learned" and not ok:
+            self.book.forget(text)                 # выученное перестало работать — пусть решает модель
+        elif (first.source in ("llm", "cloud") and not first.error and ok and steps == 1
+              and self.config.get("learn_phrases", True) and learnable(text, first.actions, self.by_name)):
+            self.book.learn(text, first.actions)
+
+    def _special(self, text: str) -> str | None:
+        """«Не то» и «забудь выученные команды» — про сами выученные команды, до всего остального."""
+        key = clean(text)
+        if key in FORGET_ALL:
+            n = self.book.clear()
+            return self.phrase(f"Забыла выученные команды: {n}.", f"Рэм забыла выученные команды: {n}.")
+        if key in UNDO:
+            said, source = self.last
+            self.last = ("", "")
+            if said and self.book.forget(said):
+                return self.phrase(f"Поняла, забыла, как выполнять «{said}». В следующий раз спрошу модель.",
+                                   f"Простите. Рэм забыла, как выполнять «{said}».")
+            if said:
+                return self.phrase("Поняла. Скажите по-другому — попробую ещё раз.",
+                                   "Простите. Скажите по-другому — Рэм попробует ещё раз.")
+        return None
+
+    # ——— перебивание ———
+
+    def _wait_voice(self) -> None:
+        """Дождаться конца ответа. Если перебили («Рэм, …» поверх голоса) — выполнить новое."""
+        if not self.voice:
+            return
+        got = self.listener.wait_speaking() if self.listener and self.listener.can_barge() else None
+        self.voice.wait()
+        if got is not None:
+            self.after_barge(got)
+
+    def after_barge(self, said: str) -> None:
+        from .listen import is_stop
+        if is_stop(said):
+            self.status_cb("game" if self.game_mode else "idle")
+        elif said:
+            self.handle(said)
+        else:
+            self.wake_only()
+
+    def wake_only(self) -> None:
+        """Сказали только «Рэм» — ждём команду."""
+        self.status_cb("listening")
+        if self.config.get("rem_style") and self.voice:
+            self.voice.say("Рэм слушает.")
+            self.voice.wait()
+            if self.listener:
+                self.listener.mic.flush()
+        else:
+            self._sound("wake")
+        self.prewarm()                          # пока человек говорит — грузим модель
+        command = self.listener.hear_command() if self.listener else ""
+        if command:
+            self.handle(command)
+        else:
+            self.status_cb("game" if self.game_mode else "idle")
+
+    # ——— диктовка ———
+
+    def dictate(self) -> str:
+        """Печатать сказанное в активное окно, пока не скажут «хватит» (dictation.py)."""
+        from .dictation import IDLE_S, Dictation
+        from .listen import find_wake, record_phrase
+        lst = self.listener
+        if lst is None:
+            return "Диктовка работает только с микрофоном."
+        if not winapi.IS_WINDOWS:
+            raise winapi.NotOnWindows()
+        if self.voice:
+            self.voice.say(self.phrase("Пишу. Скажите «хватит», чтобы закончить.",
+                                       "Рэм записывает. Скажите «хватит», чтобы закончить."))
+            self.voice.wait()
+        lst.mic.flush()
+        self.status_cb("dictating")
+        d = Dictation(winapi.type_unicode,
+                      lambda: winapi.press(winapi.VK["shift"], winapi.VK["enter"]),
+                      lambda n: [winapi.press(winapi.VK["backspace"]) for _ in range(n)])
+        while not lst.stopped.is_set() and not lst.paused.is_set():
+            audio = record_phrase(lst.mic, lst.noise, max_wait=IDLE_S, max_len=20, silence=1.0)
+            if audio is None:
+                break                                   # долго молчат — диктовка закончена
+            text = lst.asr.recognize(audio)
+            ok, rest = find_wake(text, lst.wake, lst.is_word)
+            log.info("диктовка: «%s»", text)
+            if not d.feed(rest if ok else text):
+                break
+        self.status_cb("thinking")
+        return self.phrase("Диктовка закончена.", "Рэм закончила записывать.")
 
     def _run(self, plan: Plan, dry_run: bool, replies: list, results: list) -> tuple[list, bool]:
         """Выполнить действия плана. → (что сделано для модели: умение, аргументы, вывод;
@@ -284,7 +402,7 @@ class Assistant:
                 try:
                     out = s.handler(self.ctx, **args)
                 except NotHere as e:
-                    if plan.source == "fast":
+                    if plan.source in ("fast", "learned"):
                         raise                          # пусть решает модель — handle() переспросит её
                     out, seen = str(e), True
                     self._failed = str(e)

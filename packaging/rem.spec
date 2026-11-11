@@ -20,7 +20,8 @@ datas = (
 import comtypes.client
 comtypes.client.GetModule("UIAutomationCore.dll")
 
-binaries = collect_dynamic_libs("vosk") + collect_dynamic_libs("pyaudiowpatch")   # libvosk.dll, portaudio
+binaries = (collect_dynamic_libs("vosk") + collect_dynamic_libs("pyaudiowpatch")   # libvosk.dll, portaudio
+            + collect_dynamic_libs("livekit"))     # livekit_ffi.dll — эхоподавление, ищется в livekit/rtc/resources
 
 a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],
@@ -33,6 +34,7 @@ a = Analysis(
         "pycaw.pycaw", "comtypes.stream",
         *collect_submodules("comtypes.gen"),    # UIAutomationClient и его зависимости
         "pyaudiowpatch",                     # звук колонок (импорт внутри функции)
+        "livekit.rtc",                       # эхоподавление (импорт внутри функции)
     ],
     excludes=["matplotlib", "scipy", "pandas", "torch", "IPython", "pytest"],
     noarchive=False,

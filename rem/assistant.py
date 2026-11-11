@@ -378,17 +378,17 @@ class Assistant:
         from .reminders import due_phrase
         start = time.monotonic()
         for i in range(times):
-            if self.heard_at > start:
+            if self.heard_at >= start:
                 return
             for _ in range(3):
                 self._sound("timer")
                 time.sleep(1.4)
-            if self.heard_at > start:
+            if self.heard_at >= start:
                 return
             self.say(due_phrase(item))
             if i + 1 < times:
                 deadline = time.monotonic() + gap
-                while time.monotonic() < deadline and self.heard_at <= start:
+                while time.monotonic() < deadline and self.heard_at < start:
                     time.sleep(0.5)
 
     # ——— выделенный текст ———

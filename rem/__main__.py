@@ -124,6 +124,7 @@ class App:
         self.log.info("Рэм %s слушает, слово активации «%s»", __version__, self.config["wake_word"])
         self.ui.call(self.ui.notify, f"Рэм запущен. Скажи «{self.config['wake_word'].capitalize()}» и команду.")
         threading.Thread(target=self._update_loop, name="update", daemon=True).start()
+        self.assistant.reminders.start()          # и скажет о пропущенных, пока компьютер был выключен
 
     # ——— обновления ———
 
@@ -389,6 +390,14 @@ def selftest(report: str | None = None) -> int:
         if not dic.feed(said):
             break
     check("диктовка: строка, стереть, «хватит»", typed == ["Привет.", "\n", "Лишнее.", "<7>", "Пока."])
+    import datetime as _dt
+    from .reminders import parse as parse_when
+    w = parse_when("Напомни завтра в 7 вечера купить хлеб", _dt.datetime(2026, 11, 11, 14, 0))
+    check("напоминание: «завтра в 7 вечера купить хлеб»",
+          w is not None and w.at == _dt.datetime(2026, 11, 12, 19, 0) and w.text == "купить хлеб")
+    check("напоминания и выделенный текст — быстрым путём",
+          fp.match("разбуди меня в 7").actions[0][0] == "set_reminder"
+          and fp.match("переведи это").actions == [("selected_text", {"action": "translate"})])
     check("диктовка — только быстрым путём", fp.match("записывай").actions == [("dictation", {})]
           and "dictation" not in build_system_prompt([s for s in skills if s.model]))
     if winapi.IS_WINDOWS:
@@ -553,6 +562,17 @@ def click_test(check, emit) -> None:
     values = [c.value for c in found if c.kind == "поле"]
     emit("     " + uia.describe("Блокнот", "notepad.exe", found).replace("\n", " | "))
     check(f"текст вписан в Блокнот: {values}", res is None and any(text in v for v in values))
+    # выделенный текст: Ctrl+A в Блокноте → Рэм забирает выделение, буфер возвращается как был
+    try:
+        from . import selection
+        selection.set_clipboard_text("было в буфере")
+        winapi.press(winapi.VK["ctrl"], winapi.VK["a"])
+        time.sleep(0.3)
+        got, source = selection.grab()
+        check(f"выделенный текст забран ({source}: «{got}»)", got == text and source == "selection")
+        check("буфер обмена вернулся", selection.clipboard_text() == "было в буфере")
+    except Exception as e:
+        check(f"выделенный текст: {e}", False)
     winapi.close_windows([hwnd])
     dialog_deadline, what = time.monotonic() + 10, ""
     while time.monotonic() < dialog_deadline and what != "pressed":

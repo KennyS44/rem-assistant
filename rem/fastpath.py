@@ -94,6 +94,12 @@ class FastPath:
             name, args = self.exact[t]
             return Plan(actions=[(name, dict(args))], source="fast")
 
+        for s in self.skills.values():               # свой разбор: время напоминания и т. п.
+            if s.parse is not None:
+                args = s.parse(text)
+                if args is not None:
+                    return Plan(actions=[(s.name, args)], source="fast")
+
         # почти точное совпадение: опечатка распознавания, но первое слово то же
         first = t.split()[0]
         best, best_score = None, 0.0

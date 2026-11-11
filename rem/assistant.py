@@ -37,6 +37,11 @@ class Context:
     say: Callable[[str], None]
     confirm: Callable[[str], bool] = lambda question: False     # «да/нет» голосом — опасная кнопка
     dictate: Callable[[], str] = lambda: "Диктовка работает только с микрофоном."
+    reminders: object = None                                    # reminders.Reminders
+    selection: Callable[[], tuple] = lambda: ("", "")           # выделенный текст и откуда он
+    ask: Callable[..., object] = lambda system, text, tokens=200: ""   # модель: ответ текстом
+    copy: Callable[[str], None] = lambda text: None             # положить в буфер обмена
+    show: Callable[[str], None] = lambda text: None             # показать, не читая вслух
 
 
 class Assistant:
@@ -49,8 +54,12 @@ class Assistant:
         self.client = client or Ollama(config.get("ollama_url"))
         self.apps = apps or AppIndex()
         self.timers = Timers(self._timer_done)
+        from .reminders import Reminders
+        self.reminders = Reminders(app_dir() / "reminders.json", self._reminder_due)
         self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q),
-                           lambda: self.dictate())
+                           lambda: self.dictate(), self.reminders, self._selection, self._ask_text,
+                           self._copy, lambda text: self.notify_cb(text))
+        self.heard_at = 0.0                        # когда к Рэм обращались — будильник замолкает
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
         self.notify_cb: Callable[[str], None] = lambda s: None
@@ -209,6 +218,7 @@ class Assistant:
         """Выполнить команду. dry_run — только показать план.
         Если умение вернуло данные (поиск файлов, вывод команды), модель видит их и решает,
         что дальше: ещё действие или ответ. Не больше MAX_STEPS шагов."""
+        self.heard_at = time.monotonic()
         special = self._special(text)
         if special is not None:
             if not dry_run:
@@ -322,6 +332,7 @@ class Assistant:
 
     def after_barge(self, said: str) -> None:
         from .listen import is_stop
+        self.heard_at = time.monotonic()
         if is_stop(said):
             self.status_cb("game" if self.game_mode else "idle")
         elif said:
@@ -345,6 +356,64 @@ class Assistant:
             self.handle(command)
         else:
             self.status_cb("game" if self.game_mode else "idle")
+
+    # ——— напоминания и будильник ———
+
+    def _reminder_due(self, item: dict, missed: bool) -> None:
+        from .reminders import due_phrase, say_when
+        if missed:
+            at = dt.datetime.fromisoformat(item["at"])
+            what = "будильник" if item.get("kind") == "alarm" else (item.get("text") or "напоминание")
+            self.say(f"Пока Рэм не работала, прошло: {say_when(at)} — {what}.")
+            return
+        if item.get("kind") == "alarm":
+            threading.Thread(target=self._ring, args=(item,), name="alarm", daemon=True).start()
+            return
+        self._sound("timer")
+        time.sleep(1.2)
+        self.say(due_phrase(item))
+
+    def _ring(self, item: dict, times: int = 3, gap: float = 60.0) -> None:
+        """Будильник: звонок и фраза; повтор через минуту, пока не обратятся к Рэм («Рэм, хватит»)."""
+        from .reminders import due_phrase
+        start = time.monotonic()
+        for i in range(times):
+            if self.heard_at > start:
+                return
+            for _ in range(3):
+                self._sound("timer")
+                time.sleep(1.4)
+            if self.heard_at > start:
+                return
+            self.say(due_phrase(item))
+            if i + 1 < times:
+                deadline = time.monotonic() + gap
+                while time.monotonic() < deadline and self.heard_at <= start:
+                    time.sleep(0.5)
+
+    # ——— выделенный текст ———
+
+    def _selection(self) -> tuple[str, str]:
+        from . import selection
+        return selection.grab()
+
+    def _copy(self, text: str) -> None:
+        if not winapi.IS_WINDOWS:
+            return
+        from . import selection
+        try:
+            selection.set_clipboard_text(text)
+        except Exception as e:
+            log.warning("в буфер не положила: %s", e)
+
+    def _ask_text(self, system: str, text: str, tokens: int = 200):
+        """Модель отвечает текстом. None — во время игры модель не трогаем (настройка)."""
+        cloud = bool(self.config.get("cloud_model"))
+        if self.game_mode and self.config.get("game_mode", "fast_only") == "fast_only" and not cloud:
+            return None
+        self.status_cb("thinking")
+        game = self.game_mode and self.config.get("game_mode", "fast_only")
+        return self.brain.ask_text(system, text, tokens, local=game != "fast_only", cpu_only=game == "cpu")
 
     # ——— диктовка ———
 

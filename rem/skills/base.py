@@ -49,6 +49,8 @@ class Skill:
     # пустая строка — смотреть не на что
     observe: Optional[Callable[..., str]] = None
     model: bool = True             # False — только быстрым путём: модель этого умения не видит
+    # быстрый путь своим разбором: исходная фраза → аргументы или None («напомни в 7 вечера …»)
+    parse: Optional[Callable[[str], Optional[dict]]] = None
 
     def args_schema(self) -> dict:
         return {
@@ -81,10 +83,10 @@ REGISTRY: dict[str, Skill] = {}
 
 def skill(name: str, title: str, description: str, *, params=(), examples=(),
           confirm: bool = False, category: str = "Прочее", retell: bool = False, observe=None,
-          model: bool = True):
+          model: bool = True, parse=None):
     """Декоратор: регистрирует функцию как умение."""
     def wrap(fn):
         REGISTRY[name] = Skill(name, title, description, fn, list(params), list(examples),
-                               confirm, category, retell, observe, model)
+                               confirm, category, retell, observe, model, parse)
         return fn
     return wrap

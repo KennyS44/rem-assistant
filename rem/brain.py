@@ -215,11 +215,14 @@ class Ollama:
         reply = msg.get("content") or ""
         return {"actions": actions or text_calls(reply), "reply": "" if not actions and text_calls(reply) else reply}
 
-    def ask(self, model: str, system: str, user: str, timeout: float | None = None) -> str:
-        """Просто ответ текстом — пересказать вывод команды."""
+    def ask(self, model: str, system: str, user: str, timeout: float | None = None, tokens: int = 120,
+            cpu_only: bool = False) -> str:
+        """Просто ответ текстом — пересказать вывод команды, перевести выделенное."""
         body = {"model": model, "stream": False, "think": False,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 120}}
+                "options": {"temperature": 0, "num_ctx": 4096, "num_predict": tokens}}
+        if cpu_only:
+            body["options"]["num_gpu"] = 0              # игровой режим «на процессоре»
         try:
             out = self._post("/api/chat", body, timeout)
         except OllamaError as e:
@@ -559,6 +562,19 @@ class Brain:
         nxt.steps = plan.steps + [step_line(n, a, out) for n, a, out in done]
         nxt.seconds = time.perf_counter() - t
         return nxt
+
+    def ask_text(self, system: str, text: str, tokens: int = 200, local: bool = True, cpu_only: bool = False) -> str:
+        """Ответ текстом на свою задачу (перевести, пересказать). Не вышло — пустая строка."""
+        if self.config.get("rem_style"):
+            system += " О себе — только в третьем лице («Рэм»), к пользователю на «вы»."
+        for model, cloud in self.models(local):
+            try:
+                reply = self.client.ask(model, system, text, CLOUD_TIMEOUT if cloud else 120, tokens,
+                                        cpu_only=cpu_only and not cloud)
+                return EMOJI.sub("", reply).strip()
+            except OllamaError as e:
+                log.warning("ответ текстом: %s", e)
+        return ""
 
     def retell(self, text: str, output: str) -> str:
         """Вывод команды → короткая фраза для озвучки. Не вышло — пустая строка."""

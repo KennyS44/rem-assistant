@@ -478,11 +478,22 @@ def step_line(name: str, args: dict, out: str) -> str:
     return f"- {name}({', '.join(f'{k}={v!r}' for k, v in args.items())}) → {first[:70]}"
 
 
+CLOUD_PAUSE_S = 1800                # после «лимит исчерпан» облако снова пробуем через 30 минут
+QUOTA_TEXT = ("Бесплатный лимит облака Ollama закончился — Рэм работает на модели на компьютере. "
+              "Облако снова заработает, когда лимит восстановится, или с подпиской: ollama.com/plans.")
+
+
+def is_quota_error(err: str) -> bool:
+    """Ollama ответила 402 («Add usage credits or subscribe») или 429 — лимит аккаунта, не модели."""
+    return "ответила 402" in err or "ответила 429" in err
+
+
 class Brain:
     def __init__(self, config: dict, skills: list[Skill], client: Ollama | None = None):
         self.config = config
         self.client = client or Ollama(config.get("ollama_url", DEFAULT_URL))
         self.cloud_error = ""         # почему облако не ответило в последний раз
+        self.cloud_paused_until = 0.0  # лимит облака исчерпан (402) — до этого момента его не спрашиваем
         self.set_skills(skills)
 
     def set_skills(self, skills: list[Skill]) -> None:
@@ -501,6 +512,8 @@ class Brain:
     def models(self, local: bool = True) -> list[tuple[str, bool]]:
         """Очередь моделей: (имя, облачная ли) — сначала облако, если включено."""
         cloud = (self.config.get("cloud_model") or "").strip()
+        if cloud and local and time.monotonic() < self.cloud_paused_until:
+            cloud = ""                # лимит закончился — не тратим время на заведомый отказ
         out = [(cloud, True)] if cloud else []
         return out + ([(self.config["model"], False)] if local else [])
 
@@ -533,6 +546,8 @@ class Brain:
                 if cloud:
                     self.cloud_error = str(e)
                     log.warning("облачная модель не ответила: %s", e)
+                    if is_quota_error(str(e)):
+                        self.cloud_paused_until = time.monotonic() + CLOUD_PAUSE_S
         plan.seconds = time.perf_counter() - t
         return plan
 

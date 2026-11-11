@@ -573,6 +573,31 @@ def click_test(check, emit) -> None:
         check("буфер обмена вернулся", selection.clipboard_text() == "было в буфере")
     except Exception as e:
         check(f"выделенный текст: {e}", False)
+    # окна: на весь экран → левая половина → свернуть → вернуть (умение «окна», как по голосу)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        from .skills.window import _parse
+        u = winapi.user32
+        for said, want in (("разверни блокнот на весь экран", "maximize"), ("поставь блокнот влево", "left"),
+                           ("сверни блокнот", "minimize"), ("восстанови окно блокнота", "restore")):
+            args = _parse(said)
+            res = REGISTRY["window_control"].handler(ctx, **args) if args else "не разобрано"
+            time.sleep(0.6)
+            r = wintypes.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(r))
+            mi = winapi.MONITORINFO(cbSize=ctypes.sizeof(winapi.MONITORINFO))
+            u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))
+            mid = (mi.rcWork.left + mi.rcWork.right) // 2
+            got = {"maximize": bool(u.IsZoomed(hwnd)),
+                   "left": not u.IsZoomed(hwnd) and abs(r.left - mi.rcWork.left) <= 16 and abs(r.right - mid) <= 16,
+                   "minimize": bool(u.IsIconic(hwnd)),
+                   "restore": not u.IsIconic(hwnd)}[want]
+            check(f"«{said}» → {args and args['action']} ({res or 'сделано'}; окно {r.left},{r.top}–{r.right},"
+                  f"{r.bottom}, середина экрана {mid})", res is None and got)
+    except Exception as e:
+        check(f"окна: {e}", False)
     winapi.close_windows([hwnd])
     dialog_deadline, what = time.monotonic() + 10, ""
     while time.monotonic() < dialog_deadline and what != "pressed":

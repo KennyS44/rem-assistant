@@ -645,7 +645,7 @@ class SettingsWindow:
 
     def _connect_cloud(self):
         """Вход в аккаунт Ollama (в браузере) → первая облачная модель, которая ответила верно."""
-        from .brain import CLOUD_MODELS, Brain, OllamaError
+        from .brain import CLOUD_MODELS, QUOTA_TEXT, Brain, OllamaError, is_quota_error
         cl = self.app.assistant.client
         chosen = self.cloud.get().strip()
         order = ([chosen] if chosen and chosen != self.CLOUD_OFF else []) + \
@@ -686,6 +686,8 @@ class SettingsWindow:
                         self.ui.call(lambda: self.cloud.set(m))
                         return status(f"✓ {m}: ответ за {plan.seconds:.1f} с. Нажмите «Сохранить».", "#2a7")
                     err = (plan.error if plan else err) or err or "ответ неверный"
+                    if is_quota_error(err):        # лимит общий на аккаунт — другие модели ответят так же
+                        return status("Вход выполнен. " + QUOTA_TEXT, "#b33")
                 status(f"Ни одна облачная модель не ответила: {err[:150]}", "#b33")
             except Exception as e:
                 status(f"ошибка: {str(e)[:200]}", "#b33")

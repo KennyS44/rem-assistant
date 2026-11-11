@@ -201,6 +201,10 @@ class Assistant:
         if not self.config.get("cloud_model") or plan.source == "cloud" or not err or self._cloud_warned:
             return
         self._cloud_warned = True
+        from .brain import QUOTA_TEXT, is_quota_error
+        if is_quota_error(err):
+            self.notify_cb(QUOTA_TEXT)
+            return
         if "401" in err or "unauthorized" in err.lower():
             why = "Ollama не вошла в аккаунт — нажмите «Подключить» в настройках."
         elif "недоступна" in err:

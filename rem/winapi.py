@@ -48,6 +48,9 @@ if IS_WINDOWS:
         getattr(user32, _fn).argtypes = [wintypes.HWND]
     user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.IsZoomed.argtypes = [wintypes.HWND]
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
 
     class MONITORINFO(ctypes.Structure):
         _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
@@ -87,7 +90,7 @@ VK = {
     "media_play_pause": 0xB3, "media_next": 0xB0, "media_prev": 0xB1, "media_stop": 0xB2,
     "volume_mute": 0xAD, "volume_down": 0xAE, "volume_up": 0xAF,
     "win": 0x5B, "d": 0x44, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "enter": 0x0D,
-    "tab": 0x09, "a": 0x41, "c": 0x43, "backspace": 0x08,
+    "tab": 0x09, "a": 0x41, "c": 0x43, "backspace": 0x08, "left": 0x25, "right": 0x27,
 }
 KEYEVENTF_KEYUP = 0x0002
 
@@ -220,6 +223,65 @@ def focus_window(hwnd: int) -> None:
         return                  # уже впереди; лишний Alt включил бы в окне режим меню
     press(VK["alt"])            # иначе Windows не даёт фоновой программе переключать окна
     user32.SetForegroundWindow(hwnd)
+
+
+SHOW = {"minimize": 6, "maximize": 3, "restore": 9}     # SW_MINIMIZE, SW_MAXIMIZE, SW_RESTORE
+
+
+def window_state(hwnd: int) -> str:
+    """«minimize» — свёрнуто, «maximize» — на весь экран, «restore» — обычное."""
+    _need_windows()
+    return "minimize" if user32.IsIconic(hwnd) else "maximize" if user32.IsZoomed(hwnd) else "restore"
+
+
+def show_window(hwnd: int, how: str) -> None:
+    """Свернуть / развернуть на весь экран / вернуть обычный размер."""
+    _need_windows()
+    user32.ShowWindow(hwnd, SHOW[how])
+    if how != "minimize":
+        focus_window(hwnd)
+
+
+def window_half(hwnd: int, side: str) -> tuple[int, int, int, int]:
+    """Поставить окно на левую или правую половину его монитора (без панели задач).
+    Не через Win+стрелку: та ещё предлагает выбрать окно на другую половину. → (x, y, w, h) половины."""
+    _need_windows()
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    prev = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2 — честные пиксели
+    try:
+        if user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
+            user32.ShowWindow(hwnd, 9)                                   # SW_RESTORE
+        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        user32.GetMonitorInfoW(user32.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))
+        work = mi.rcWork
+        w, h = (work.right - work.left) // 2, work.bottom - work.top
+        x = work.left if side == "left" else work.left + w
+        # невидимая рамка (тень) окна Windows 10/11: без поправки между окном и краем экрана щель
+        outer, frame = wintypes.RECT(), wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(outer))
+        ml = mt = mr = mb = 0
+        if not ctypes.WinDLL("dwmapi").DwmGetWindowAttribute(hwnd, 9, ctypes.byref(frame), ctypes.sizeof(frame)):
+            ml, mt = frame.left - outer.left, frame.top - outer.top           # DWMWA_EXTENDED_FRAME_BOUNDS
+            mr, mb = outer.right - frame.right, outer.bottom - frame.bottom
+        user32.SetWindowPos(hwnd, None, x - ml, work.top - mt, w + ml + mr, h + mt + mb, 0x0004)   # SWP_NOZORDER
+    finally:
+        if prev:
+            user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(prev))
+    focus_window(hwnd)
+    return x, work.top, w, h
+
+
+def monitor_count() -> int:
+    return user32.GetSystemMetrics(80) if IS_WINDOWS else 1             # SM_CMONITORS
+
+
+def window_next_monitor(hwnd: int) -> None:
+    """Перенести окно на соседний монитор — как Win+Shift+→ (размер и «на весь экран» сохраняются)."""
+    import time
+    focus_window(hwnd)
+    time.sleep(0.2)
+    press(VK["win"], VK["shift"], VK["right"])
 
 
 def foreground_window() -> dict | None:

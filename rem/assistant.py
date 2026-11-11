@@ -42,6 +42,7 @@ class Context:
     ask: Callable[..., object] = lambda system, text, tokens=200: ""   # модель: ответ текстом
     copy: Callable[[str], None] = lambda text: None             # положить в буфер обмена
     show: Callable[[str], None] = lambda text: None             # показать, не читая вслух
+    phrase: Callable[[str, str], str] = lambda plain, rem: plain    # ответ обычный / «в стиле Рэм»
 
 
 class Assistant:
@@ -58,7 +59,7 @@ class Assistant:
         self.reminders = Reminders(app_dir() / "reminders.json", self._reminder_due)
         self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q),
                            lambda: self.dictate(), self.reminders, self._selection, self._ask_text,
-                           self._copy, lambda text: self.notify_cb(text))
+                           self._copy, lambda text: self.notify_cb(text), self.phrase)
         self.heard_at = 0.0                        # когда к Рэм обращались — будильник замолкает
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
@@ -90,6 +91,9 @@ class Assistant:
     def phrase(self, plain: str, rem: str) -> str:
         """Служебная фраза: обычная или «в стиле Рем» (о себе в третьем лице, на «вы»)."""
         return rem if self.config.get("rem_style") else plain
+
+    def _not_understood(self) -> str:
+        return self.phrase("Не удалось понять команду.", "Простите, Рэм не поняла команду.")
 
     def _sound(self, name: str) -> None:
         if self.sounds:
@@ -155,7 +159,9 @@ class Assistant:
             plan = self.brain.plan(text, cpu_only=True, context=context, local=mode == "cpu")
             self._warn_cloud(plan)
             if plan.error and mode == "fast_only":
-                return Plan(reply="Во время игры я выполняю только простые команды.", source="game")
+                return Plan(reply=self.phrase("Во время игры я выполняю только простые команды.",
+                                               "Во время игры Рэм выполняет только простые команды."),
+                            source="game")
             return plan
         plan = self.brain.plan(text, context=context)
         self._warn_cloud(plan)
@@ -232,8 +238,9 @@ class Assistant:
         replies, results = [], []
         if plan.error:
             log.warning("модель: %s", plan.error)
-            replies.append("Не могу связаться с моделью. Проверь, запущена ли Ollama."
-                           if "недоступна" in plan.error else "Не удалось понять команду.")
+            replies.append(self.phrase("Не могу связаться с моделью. Проверь, запущена ли Ollama.",
+                                       "Простите, Рэм не может связаться с моделью. Проверьте, запущена ли Ollama.")
+                           if "недоступна" in plan.error else self._not_understood())
         elif not plan.actions and not plan.reply:
             replies.append(self.phrase("Команда не распознана.", "Простите, Рэм не расслышала."))
 
@@ -250,7 +257,7 @@ class Assistant:
                 plan = first = self.plan(text, fast_ok=False)
                 steps = 0                              # считаем шаги заново — уже ответа модели
                 if plan.error:
-                    replies.append("Не удалось понять команду.")
+                    replies.append(self._not_understood())
                     break
                 continue
             if not more:
@@ -307,7 +314,7 @@ class Assistant:
         key = clean(text)
         if key in FORGET_ALL:
             n = self.book.clear()
-            return self.phrase(f"Забыла выученные команды: {n}.", f"Рэм забыла выученные команды: {n}.")
+            return self.phrase(f"Забыла выученные команды: {n}.", f"Рэм забыла все выученные команды: {n}.")
         if key in UNDO:
             said, source = self.last
             self.last = ("", "")
@@ -371,7 +378,7 @@ class Assistant:
             return
         self._sound("timer")
         time.sleep(1.2)
-        self.say(due_phrase(item))
+        self.say(due_phrase(item, rem=bool(self.config.get("rem_style"))))
 
     def _ring(self, item: dict, times: int = 3, gap: float = 60.0) -> None:
         """Будильник: звонок и фраза; повтор через минуту, пока не обратятся к Рэм («Рэм, хватит»)."""
@@ -385,7 +392,7 @@ class Assistant:
                 time.sleep(1.4)
             if self.heard_at >= start:
                 return
-            self.say(due_phrase(item))
+            self.say(due_phrase(item, rem=bool(self.config.get("rem_style"))))
             if i + 1 < times:
                 deadline = time.monotonic() + gap
                 while time.monotonic() < deadline and self.heard_at < start:

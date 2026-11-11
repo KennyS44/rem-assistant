@@ -57,7 +57,7 @@ def find_files(ctx, query: str, folder: str = ""):
     if not found and folder:                       # модель могла угадать папку зря — ищем везде
         return find_files(ctx, query)
     if not found:
-        return f"Ничего не найдено по запросу «{query}»."
+        return ctx.phrase(f"Ничего не найдено по запросу «{query}».", f"Рэм ничего не нашла по запросу «{query}».")
     found.sort(reverse=True)
     lines = [f"{p} (изменён {dt.datetime.fromtimestamp(t):%d.%m.%Y %H:%M})" for t, p in found[:10]]
     more = f"\n…и ещё {len(found) - 10}" if len(found) > 10 else ""

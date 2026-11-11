@@ -129,7 +129,7 @@ def open_app(ctx, name: str):
         return None
     hit = ctx.apps.resolve(name)
     if not hit:
-        return f"Программа «{name}» не найдена."
+        return ctx.phrase(f"Программа «{name}» не найдена.", f"Простите, Рэм не нашла программу «{name}».")
     winapi.open_path(hit[1])
     return None
 

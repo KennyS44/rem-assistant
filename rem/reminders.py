@@ -252,17 +252,21 @@ def say_when(at: dt.datetime, now: dt.datetime | None = None, relative: bool = F
     return f"{at.day} {MONTHS_GEN[at.month - 1]} в {clock}"
 
 
-def due_phrase(item: dict) -> str:
+def due_phrase(item: dict, rem: bool = False) -> str:
+    """rem — «в стиле Рэм»: о себе в третьем лице («Рэм напоминает»)."""
     text = item.get("text", "")
     if item.get("kind") == "alarm":
         at = dt.datetime.fromisoformat(item["at"])
-        first = "Доброе утро! Уже" if 4 <= at.hour < 12 else "Будильник! Уже"
-        return f"{first} {at.hour}:{at.minute:02d}." + (f" {text[:1].upper()}{text[1:]}." if text else "")
+        morning = 4 <= at.hour < 12
+        first = "Доброе утро! Уже" if morning else "Будильник! Уже"
+        wake = ", Рэм будит вас" if rem and morning else ""
+        return f"{first} {at.hour}:{at.minute:02d}{wake}." + (f" {text[:1].upper()}{text[1:]}." if text else "")
+    verb = "Рэм напоминает" if rem else "Напоминаю"
     if not text:
-        return "Напоминаю!"
+        return f"{verb}!" if not rem else "Рэм напоминает вам."
     if text.startswith(("про ", "о ", "об ")):
-        return f"Напоминаю {text}."
-    return f"Напоминаю: {text}."
+        return f"{verb} {text}."
+    return f"{verb}: {text}."
 
 
 # ——— хранилище и часы ———

@@ -60,8 +60,8 @@ def set_reminder(ctx, at: str, text: str = "", kind: str = "remind", relative: s
     ctx.reminders.add(when, text, kind)
     said = R.say_when(when, now, relative == "да")
     if kind == "alarm":
-        return f"Разбужу {said}."
-    return f"Напомню {said}" + (f": {text}." if text else ".")
+        return ctx.phrase(f"Разбужу {said}.", f"Рэм разбудит вас {said}.")
+    return ctx.phrase(f"Напомню {said}", f"Рэм напомнит {said}") + (f": {text}." if text else ".")
 
 
 @skill("list_reminders", "Какие напоминания", "Сказать, какие напоминания и будильники поставлены.",

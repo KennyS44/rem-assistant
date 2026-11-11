@@ -36,12 +36,13 @@ def open_folder(ctx, folder: str):
 def create_folder(ctx, name: str, where: str = "desktop"):
     clean = re.sub(r'[\\/:*?"<>|]', "", name).strip(" .")
     if not clean:
-        return "Не получилось разобрать имя папки."
+        return ctx.phrase("Не получилось разобрать имя папки.", "Простите, Рэм не разобрала имя папки.")
     path = os.path.join(winapi.known_folder(where or "desktop"), clean)
     if os.path.exists(path):
         return f"Папка «{clean}» уже есть."
     os.makedirs(path)
-    return f"Папка «{clean}» создана: {FOLDER_RU.get(where or 'desktop', '')}."
+    where_ru = FOLDER_RU.get(where or 'desktop', '')
+    return ctx.phrase(f"Папка «{clean}» создана: {where_ru}.", f"Рэм создала папку «{clean}»: {where_ru}.")
 
 
 @skill("screenshot", "Скриншот", "Сделать снимок экрана и сохранить в папку «Изображения».",

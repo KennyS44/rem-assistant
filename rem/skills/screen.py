@@ -256,7 +256,7 @@ def switch_tab(ctx, name: str):
             return None
         if now == start:
             break
-    return f"Вкладки «{q}» не нашла."
+    return ctx.phrase(f"Вкладки «{q}» не нашла.", f"Простите, Рэм не нашла вкладку «{q}».")
 
 
 # ——— чаты Telegram ———
@@ -311,7 +311,7 @@ def _telegram(ctx) -> dict | None:
 def open_chat(ctx, name: str):
     who = chat_name(name)
     if not who:
-        return "Не расслышала, какой чат открыть."
+        return ctx.phrase("Не расслышала, какой чат открыть.", "Простите, Рэм не расслышала, какой чат открыть.")
     w = _telegram(ctx)
     if w is None:
         return "Telegram не найден."
@@ -335,7 +335,7 @@ def open_chat(ctx, name: str):
             rows = _chats(uia.controls(hwnds))
             i = find_named(who, [chat_title(c.name) for c in rows])
         if i is None:
-            return f"Чат «{who}» в Telegram не нашла."
+            return ctx.phrase(f"Чат «{who}» в Telegram не нашла.", f"Простите, Рэм не нашла в Telegram чат «{who}».")
     if not uia.press_control(hwnds, rows[i].name, "пункт списка"):
         return f"Чат «{chat_title(rows[i].name)}» не открылся."
     return None

@@ -74,16 +74,16 @@ def selected_text(ctx, action: str, lang: str = ""):
     answer = ctx.ask(PROMPTS[action].format(lang=lang), cut(text, ASK_LIMIT), TOKENS[action])
     if answer is None:
         return ctx.phrase("Во время игры я этого не делаю — нужна модель.",
-                          "Простите, во время игры Рэм этого не делает — нужна модель.")
+                          "Простите, во время игры это недоступно — нужна модель.")
     answer = answer.strip()
     if not answer:
         return ctx.phrase("Не получилось — модель не ответила. Проверь, запущена ли Ollama.",
-                          "Простите, модель не ответила Рэм. Проверьте, запущена ли Ollama.")
+                          "Простите, модель не ответила. Проверьте, запущена ли Ollama.")
     if action == "translate":
         ctx.copy(answer)
         if lang != "русский":                 # чужой язык русским голосом не читаем — показываем
             ctx.show(answer)
             return ctx.phrase(f"Перевела на {lang} и скопировала в буфер — можно вставить.",
-                              f"Рэм перевела на {lang} и скопировала в буфер — можно вставить.")
+                              f"Перевод на {lang} уже в буфере обмена — можно вставить.")
         return answer
     return answer

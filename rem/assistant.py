@@ -239,7 +239,7 @@ class Assistant:
         if plan.error:
             log.warning("модель: %s", plan.error)
             replies.append(self.phrase("Не могу связаться с моделью. Проверь, запущена ли Ollama.",
-                                       "Простите, Рэм не может связаться с моделью. Проверьте, запущена ли Ollama.")
+                                       "Простите, модель не отвечает. Проверьте, запущена ли Ollama.")
                            if "недоступна" in plan.error else self._not_understood())
         elif not plan.actions and not plan.reply:
             replies.append(self.phrase("Команда не распознана.", "Простите, Рэм не расслышала."))
@@ -314,7 +314,7 @@ class Assistant:
         key = clean(text)
         if key in FORGET_ALL:
             n = self.book.clear()
-            return self.phrase(f"Забыла выученные команды: {n}.", f"Рэм забыла все выученные команды: {n}.")
+            return self.phrase(f"Забыла выученные команды: {n}.", "Хорошо, Рэм всё забыла.")
         if key in UNDO:
             said, source = self.last
             self.last = ("", "")
@@ -370,8 +370,11 @@ class Assistant:
         from .reminders import due_phrase, say_when
         if missed:
             at = dt.datetime.fromisoformat(item["at"])
-            what = "будильник" if item.get("kind") == "alarm" else (item.get("text") or "напоминание")
-            self.say(f"Пока Рэм не работала, прошло: {say_when(at)} — {what}.")
+            when, text = say_when(at), item.get("text")
+            if item.get("kind") == "alarm":
+                self.say(f"Пока Рэм была выключена, пропущен будильник: {when}.")
+            else:
+                self.say(f"Пока Рэм была выключена, пропущено напоминание{': ' + text if text else ''}, {when}.")
             return
         if item.get("kind") == "alarm":
             threading.Thread(target=self._ring, args=(item,), name="alarm", daemon=True).start()

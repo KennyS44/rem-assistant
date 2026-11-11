@@ -311,7 +311,7 @@ def _telegram(ctx) -> dict | None:
 def open_chat(ctx, name: str):
     who = chat_name(name)
     if not who:
-        return ctx.phrase("Не расслышала, какой чат открыть.", "Простите, Рэм не расслышала, какой чат открыть.")
+        return ctx.phrase("Не расслышала, какой чат открыть.", "Простите, какой чат открыть?")
     w = _telegram(ctx)
     if w is None:
         return "Telegram не найден."

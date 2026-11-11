@@ -41,8 +41,7 @@ def create_folder(ctx, name: str, where: str = "desktop"):
     if os.path.exists(path):
         return f"Папка «{clean}» уже есть."
     os.makedirs(path)
-    where_ru = FOLDER_RU.get(where or 'desktop', '')
-    return ctx.phrase(f"Папка «{clean}» создана: {where_ru}.", f"Рэм создала папку «{clean}»: {where_ru}.")
+    return f"Папка «{clean}» создана: {FOLDER_RU.get(where or 'desktop', '')}."
 
 
 @skill("screenshot", "Скриншот", "Сделать снимок экрана и сохранить в папку «Изображения».",

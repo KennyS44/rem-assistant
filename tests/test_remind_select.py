@@ -198,10 +198,10 @@ def test_game_mode_fast_only_does_not_ask_model():
 
 def test_rem_style_phrases(tmp_path):
     """«В стиле Рэм» ответы умений — о себе в третьем лице, без «я»; обычный стиль не меняется."""
-    assert due_phrase({"text": "купить хлеб", "at": "2026-11-11T19:00"}, rem=True) == "Рэм напоминает: купить хлеб."
-    assert due_phrase({"text": "", "at": "2026-11-11T19:00"}, rem=True) == "Рэм напоминает вам."
+    assert due_phrase({"text": "купить хлеб", "at": "2026-11-11T19:00"}, rem=True) == "Вы просили напомнить: купить хлеб."
+    assert due_phrase({"text": "", "at": "2026-11-11T19:00"}, rem=True) == "Вы просили напомнить."
     assert due_phrase({"kind": "alarm", "text": "", "at": "2026-11-12T07:00"}, rem=True) == \
-        "Доброе утро! Уже 7:00, Рэм будит вас."
+        "Доброе утро! Уже 7:00, пора вставать."
     r = Reminders(tmp_path / "r.json", lambda *a: None)
     a = Assistant({**cfgmod.DEFAULTS, "rem_style": True})
     a.ctx.reminders = r

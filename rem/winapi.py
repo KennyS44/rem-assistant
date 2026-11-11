@@ -425,8 +425,10 @@ def audio_outputs() -> list[dict]:
     _need_windows()
     _com()
     from pycaw.pycaw import AudioUtilities
-    cur = AudioUtilities.GetSpeakers()
-    cur_id = getattr(cur, "id", None)
+    try:
+        cur_id = getattr(AudioUtilities.GetSpeakers(), "id", None)
+    except Exception:              # «Element not found» — устройства по умолчанию нет (нет звуковой карты)
+        cur_id = None
     out = []
     for d in AudioUtilities.GetAllDevices(data_flow=0, device_state=1):    # eRender, DEVICE_STATE_ACTIVE
         if d is not None and d.FriendlyName:

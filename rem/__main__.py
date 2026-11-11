@@ -659,19 +659,17 @@ def speech_test(wavs: list[str], report: str | None = None) -> int:
     # перебивание: «Рэм, открой браузер» поверх её собственного голоса (готовые фразы)
     from .aec import EchoCanceller
     from .speech import read_wav
-    from .voiceclips import CLIPS
     if not EchoCanceller().ok:
         ok = False
         emit("FAIL эхоподавление не загрузилось")
     else:
         from .echo import to_mono_16k
-        from .voiceclips import clip, phrases
-        names = {clip(t).name: t for t in phrases() if clip(t)}
+        from .voiceclips import clip
         parts, said, t = [], [], 0.0
-        for c in sorted(CLIPS.glob("*.wav"))[:10]:
-            pcm, ch, rate = read_wav(c)
+        for text in BARGE_SPEECH:               # фразы заданы явно: новые записи не сдвигают сценарий
+            pcm, ch, rate = read_wav(clip(text))
             a = to_mono_16k(pcm.tobytes(), ch, rate)
-            said.append((t, t + len(a) / 16000, names.get(c.name, "")))
+            said.append((t, t + len(a) / 16000, text))
             parts += [a, np.zeros(2400, dtype=np.int16)]
             t += (len(a) + 2400) / 16000
         far = np.concatenate(parts).astype(np.float64)
@@ -690,6 +688,15 @@ def speech_test(wavs: list[str], report: str | None = None) -> int:
         emit(f"{'OK  ' if good else 'FAIL'} свой голос не перебивает: {'да' if good else f'«{got}» на {when} с'}")
     emit("ИТОГ: " + ("речь работает" if ok else "есть ошибки"))
     return 0 if ok else 1
+
+
+# что Рэм говорит в проверке перебивания: человек вступает на 13-й секунде, когда она не произносит
+# своё имя (если произносит — без колонок сторож ей не верит, это отдельный случай); «Рэм» в её
+# фразах до и после — проверка, что свой голос её не будит
+BARGE_SPEECH = ["Таймер на 20 минут.", "40 минут прошли — таймер закончился.", "Простите, Рэм не расслышала.",
+                "5 минут прошли — таймер закончился.", "Таймер на 25 минут.", "Таймер на 3 минуты.",
+                "Таймер на 45 минут.", "Перезагрузить компьютер? Скажите «да» или «нет».", "Рэм всё сделала.",
+                "25 минут прошли — таймер закончился."]
 
 
 def barge_case(vm, asr, far, near, at: float | None, delay_ms: int = 120, said=()):

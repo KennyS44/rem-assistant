@@ -403,6 +403,28 @@ def selftest(report: str | None = None) -> int:
     if winapi.IS_WINDOWS:
         check("папка «Загрузки» находится", bool(winapi.known_folder("downloads")))
         check("проверка полноэкранного окна", winapi.foreground_is_fullscreen() in (True, False))
+        check("экран, файлы, сеть — быстрым путём",
+              fp.match("сделай ярче").actions == [("display", {"action": "up"})]
+              and fp.match("очисти корзину").actions[0][0] == "file_actions"
+              and fp.match("включи вай фай").actions == [("network", {"action": "wifi_on"})]
+              and fp.match("выключи компьютер через час").actions == [("shutdown_timer", {"minutes": 60})])
+        for name, fn in (("яркость экранов", lambda: winapi.brightness()),
+                         ("ночной свет", lambda: winapi.night_light()),
+                         ("корзина", lambda: winapi.recycle_bin()),
+                         ("выделенное в проводнике", lambda: winapi.explorer_selection()),
+                         ("раскладки", lambda: [hex(h & 0xFFFF) for h in winapi.keyboard_layouts()]),
+                         ("не беспокоить", lambda: winapi.focus_assist()),
+                         ("Wi-Fi и Bluetooth", lambda: winapi.radios()),
+                         ("подключения", lambda: winapi.connections())):
+            try:                                 # на сервере сборки чего-то может не быть — главное, без падений
+                emit(f"INFO {name}: {fn()}")
+            except Exception as e:
+                emit(f"INFO {name}: ошибка {type(e).__name__}: {e}")
+        with tempfile.TemporaryDirectory() as d:
+            junk = Path(d) / "рэм-проверка.txt"
+            junk.write_text("x", encoding="utf-8")
+            check("удаление в корзину", winapi.recycle([str(junk)]) and not junk.exists())
+        check("раскладки клавиатуры видны", len(winapi.keyboard_layouts()) >= 1)
         import importlib
         for mod in ("vosk", "onnx_asr", "onnxruntime", "sounddevice", "pystray", "pycaw.pycaw",
                     "comtypes.client", "psutil", "PIL.ImageGrab", "pyaudiowpatch", "livekit.rtc"):

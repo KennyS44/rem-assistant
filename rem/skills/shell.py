@@ -6,8 +6,6 @@
 """
 from __future__ import annotations
 
-import subprocess
-
 from .. import winapi
 from .base import Param, skill
 
@@ -24,17 +22,4 @@ TIMEOUT = 60
                Param("description", "string", "что делает команда, коротко по-русски")],
        confirm=True, category="Система", retell=True)
 def run_command(ctx, command: str, description: str = ""):
-    winapi._need_windows()
-    script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; " \
-             + command
-    try:
-        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                            "-Command", script], capture_output=True, timeout=TIMEOUT,
-                           creationflags=0x08000000)                 # CREATE_NO_WINDOW
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"команда не уложилась в {TIMEOUT} с")
-    out = p.stdout.decode("utf-8", "replace").strip()
-    err = p.stderr.decode("utf-8", "replace").strip()
-    if p.returncode != 0 and not out:
-        raise RuntimeError(err[:500] or f"код {p.returncode}")
-    return out[:3000]
+    return winapi.powershell(command, timeout=TIMEOUT)[:3000]

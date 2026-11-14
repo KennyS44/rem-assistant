@@ -461,3 +461,354 @@ def set_volume(percent: int) -> None:
     ev = _endpoint_volume()
     ev.SetMute(0, None)
     ev.SetMasterVolumeLevelScalar(max(0, min(100, percent)) / 100, None)
+
+
+# ——— PowerShell (то, до чего из Python не дотянуться без новых библиотек) ———
+
+def powershell(script: str, timeout: float = 30) -> str:
+    """Выполнить сценарий в Windows PowerShell 5.1 без окна; вывод — UTF-8. Ошибка без вывода — исключение."""
+    _need_windows()
+    script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; " \
+             + script
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", script], capture_output=True, timeout=timeout,
+                           creationflags=0x08000000)                 # CREATE_NO_WINDOW
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"команда не уложилась в {timeout:.0f} с")
+    out = p.stdout.decode("utf-8", "replace").strip()
+    err = p.stderr.decode("utf-8", "replace").strip()
+    if p.returncode != 0 and not out:
+        raise RuntimeError(err[:500] or f"код {p.returncode}")
+    return out
+
+
+# ——— экран: яркость, ночной свет, выключить монитор ———
+
+def _ddc_monitors() -> list:
+    """Физические мониторы (DDC/CI) — [(dxva2, массив PHYSICAL_MONITOR, число)] для каждого экрана."""
+    class PHYSICAL_MONITOR(ctypes.Structure):
+        _fields_ = [("h", wintypes.HANDLE), ("desc", wintypes.WCHAR * 128)]
+
+    dxva2 = ctypes.WinDLL("dxva2")
+    H, D = wintypes.HANDLE, wintypes.DWORD
+    dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR.argtypes = [H, ctypes.POINTER(D)]
+    dxva2.GetPhysicalMonitorsFromHMONITOR.argtypes = [H, D, ctypes.c_void_p]
+    dxva2.GetVCPFeatureAndVCPFeatureReply.argtypes = [H, wintypes.BYTE, ctypes.c_void_p, ctypes.POINTER(D),
+                                                      ctypes.POINTER(D)]
+    dxva2.SetVCPFeature.argtypes = [H, wintypes.BYTE, D]
+    dxva2.DestroyPhysicalMonitors.argtypes = [D, ctypes.c_void_p]
+    hmons = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                              wintypes.LPARAM)
+
+    def cb(hmon, hdc, rect, _):
+        hmons.append(hmon)
+        return True
+
+    user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.c_void_p, proc, wintypes.LPARAM]
+    user32.EnumDisplayMonitors(None, None, proc(cb), 0)
+    out = []
+    for hmon in hmons:
+        n = wintypes.DWORD()
+        if not dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, ctypes.byref(n)) or not n.value:
+            continue
+        arr = (PHYSICAL_MONITOR * n.value)()
+        if dxva2.GetPhysicalMonitorsFromHMONITOR(hmon, n.value, arr):
+            out.append((dxva2, arr, n.value))
+    return out
+
+
+def _ddc_brightness(set_to=None, step: int = 0) -> list[int]:
+    """Яркость внешних мониторов по DDC/CI (код VCP 0x10). Возвращает новые значения в процентах."""
+    got = []
+    for dxva2, arr, n in _ddc_monitors():
+        try:
+            for i in range(n):
+                h = arr[i].h
+                cur, mx = wintypes.DWORD(), wintypes.DWORD()
+                if not dxva2.GetVCPFeatureAndVCPFeatureReply(h, 0x10, None, ctypes.byref(cur), ctypes.byref(mx)):
+                    continue                          # монитор не отвечает: DDC/CI выключен в его меню
+                top = mx.value or 100
+                pct = round(cur.value * 100 / top)
+                if set_to is not None or step:
+                    pct = max(0, min(100, set_to if set_to is not None else pct + step))
+                    if not dxva2.SetVCPFeature(h, 0x10, round(pct * top / 100)):
+                        continue
+                got.append(pct)
+        finally:
+            dxva2.DestroyPhysicalMonitors(n, arr)
+    return got
+
+
+def _wmi_brightness(set_to=None, step: int = 0) -> list[int]:
+    """Яркость встроенного экрана ноутбука (WMI). Возвращает новое значение — или [], если такого экрана нет."""
+    try:
+        cur = powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness "
+                         "-ErrorAction Stop | Select-Object -First 1).CurrentBrightness", timeout=15)
+    except RuntimeError:
+        return []
+    if not cur.strip().isdigit():
+        return []
+    pct = int(cur.strip())
+    if set_to is None and not step:
+        return [pct]
+    pct = max(0, min(100, set_to if set_to is not None else pct + step))
+    powershell("Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | "
+               f"Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={pct}}} | "
+               "Out-Null", timeout=15)
+    return [pct]
+
+
+def brightness(set_to: int | None = None, step: int = 0) -> list[int]:
+    """Узнать или поменять яркость всех экранов: внешние мониторы — DDC/CI, ноутбук — WMI.
+    Пустой список — ни один экран яркость из программ не меняет."""
+    _need_windows()
+    got = []
+    try:
+        got = _ddc_brightness(set_to, step)
+    except OSError:
+        pass
+    return got + _wmi_brightness(set_to, step)
+
+
+NIGHT_KEY = (r"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current"
+             r"\default$windows.data.bluelightreduction.bluelightreductionstate"
+             r"\windows.data.bluelightreduction.bluelightreductionstate")
+
+
+def night_light_blob(data: bytes, on: bool) -> bytes | None:
+    """Новое состояние «ночного света» в формате Windows 10/11. None — формат незнакомый, лучше не трогать.
+    Включённый отличается байтом 18 (0x15 вместо 0x13) и двумя байтами 10 00 после 23-го;
+    метка времени (байты 10–14) должна измениться, иначе Windows не заметит."""
+    d = bytearray(data)
+    if len(d) < 30:
+        return None
+    is_on = d[18] == 0x15
+    if d[18] not in (0x13, 0x15) or (is_on and bytes(d[23:25]) != b"\x10\x00"):
+        return None
+    if is_on == on:
+        return bytes(d)
+    if on:
+        d[18] = 0x15
+        d[23:23] = b"\x10\x00"
+    else:
+        d[18] = 0x13
+        del d[23:25]
+    for i in range(10, 15):
+        if d[i] != 0xFF:
+            d[i] += 1
+            break
+    return bytes(d)
+
+
+def night_light(on: bool | None = None) -> bool | None:
+    """Узнать (on=None) или поменять «ночной свет». Возвращает новое состояние; None — поменять не вышло."""
+    _need_windows()
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, NIGHT_KEY, 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+            data, kind = winreg.QueryValueEx(k, "Data")
+            if on is None:
+                new = night_light_blob(data, True)
+                return None if new is None else data[18] == 0x15
+            new = night_light_blob(data, on)
+            if new is None:
+                return None
+            if new != data:
+                winreg.SetValueEx(k, "Data", 0, kind, new)
+            return on
+    except OSError:
+        return None                                   # ночной свет ни разу не открывали — ключа ещё нет
+
+
+def monitor_off() -> None:
+    """Погасить экраны (компьютер продолжает работать); включаются от мыши, клавиш или «включи экран»."""
+    _need_windows()
+    user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)                # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER
+
+
+def monitor_on() -> None:
+    _need_windows()
+    user32.mouse_event(0x0001, 1, 0, 0, 0)                         # MOUSEEVENTF_MOVE: сдвиг на пиксель и назад
+    user32.mouse_event(0x0001, -1, 0, 0, 0)
+
+
+# ——— файлы: выделенное в проводнике, корзина ———
+
+def explorer_selection(foreground_only: bool = False) -> list[str]:
+    """Пути файлов, выделенных в окне проводника, с которым работают (или в верхнем окне проводника;
+    foreground_only — только если проводник и есть то окно, с которым работают)."""
+    _need_windows()
+    _com()
+    import comtypes.client
+    order = [w["hwnd"] for w in open_windows() if w["exe"].lower() == "explorer.exe"]
+    fg = foreground_window()
+    if fg and fg["hwnd"] in order:
+        order.remove(fg["hwnd"])
+        order.insert(0, fg["hwnd"])
+    elif foreground_only:
+        return []
+    if not order:
+        return []
+    shell = comtypes.client.CreateObject("Shell.Application", dynamic=True)
+    wins = shell.Windows()
+    by_hwnd = {}
+    for i in range(wins.Count):
+        try:
+            w = wins.Item(i)
+            by_hwnd[int(w.HWND)] = w
+        except Exception:
+            continue
+    for hwnd in order:
+        w = by_hwnd.get(hwnd)
+        if w is None:
+            continue
+        try:
+            items = w.Document.SelectedItems()
+            return [items.Item(i).Path for i in range(items.Count)]
+        except Exception:
+            return []
+    return []
+
+
+def recycle(paths: list[str]) -> bool:
+    """Отправить файлы и папки в корзину (их можно восстановить). True — получилось."""
+    _need_windows()
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", ctypes.c_void_p),
+                    ("pTo", ctypes.c_void_p), ("fFlags", wintypes.WORD), ("aborted", wintypes.BOOL),
+                    ("mappings", ctypes.c_void_p), ("title", ctypes.c_void_p)]
+
+    buf = ctypes.create_unicode_buffer("\0".join(os.path.abspath(p) for p in paths) + "\0")
+    op = SHFILEOPSTRUCTW(None, 3, ctypes.addressof(buf), None,       # FO_DELETE
+                         0x40 | 0x10 | 0x04 | 0x400)                 # ALLOWUNDO, NOCONFIRMATION, SILENT, NOERRORUI
+    return shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.aborted
+
+
+def recycle_bin() -> tuple[int, int]:
+    """Сколько в корзине: (файлов, байт)."""
+    _need_windows()
+
+    class SHQUERYRBINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("size", ctypes.c_longlong), ("count", ctypes.c_longlong)]
+
+    info = SHQUERYRBINFO(ctypes.sizeof(SHQUERYRBINFO))
+    if shell32.SHQueryRecycleBinW(None, ctypes.byref(info)) != 0:
+        return 0, 0
+    return info.count, info.size
+
+
+def empty_recycle_bin() -> None:
+    _need_windows()
+    shell32.SHEmptyRecycleBinW(None, None, 0x1 | 0x2 | 0x4)         # без вопроса, без окна, без звука
+
+
+# ——— сеть: Wi‑Fi и Bluetooth (Windows.Devices.Radios — без прав администратора) ———
+
+_RADIOS = r"""
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and
+  $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+[Windows.Devices.Radios.Radio, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
+[Windows.Devices.Radios.RadioAccessStatus, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
+[Windows.Devices.Radios.RadioState, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
+Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+$radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+"""
+
+
+def radios(kind: str | None = None, state: str | None = None) -> dict[str, str]:
+    """Радиомодули: {"WiFi": "On", "Bluetooth": "Off"}. С kind и state («On»/«Off») — сначала переключить."""
+    script = _RADIOS
+    if kind and state:
+        script += (f"$radios | Where-Object {{ $_.Kind -eq '{kind}' }} | ForEach-Object {{ Await "
+                   f"($_.SetStateAsync('{state}')) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null }}\n"
+                   "Start-Sleep -Milliseconds 500\n")
+    script += "$radios | ForEach-Object { \"$($_.Kind)=$($_.State)\" }"
+    out = {}
+    for line in powershell(script).splitlines():
+        k, _, v = line.strip().partition("=")
+        if k and v and k not in out:
+            out[k] = v
+    return out
+
+
+def connections() -> list[dict]:
+    """Подключения: [{"alias": «Wi-Fi», "name": имя сети, "internet": bool}]."""
+    out = []
+    script = ("Get-NetConnectionProfile | ForEach-Object { "
+              "\"$($_.InterfaceAlias)|$($_.Name)|$($_.IPv4Connectivity)|$($_.IPv6Connectivity)\" }")
+    for line in powershell(script, timeout=15).splitlines():
+        parts = line.strip().split("|")
+        if len(parts) == 4:
+            out.append({"alias": parts[0], "name": parts[1], "internet": "Internet" in parts[2] + parts[3]})
+    return out
+
+
+# ——— раскладка, «не беспокоить», выключение по таймеру ———
+
+LANGS = {"en": 0x09, "ru": 0x19, "uk": 0x22, "de": 0x07, "fr": 0x0C, "es": 0x0A, "be": 0x23, "kk": 0x3F}
+
+
+def keyboard_layouts() -> list[int]:
+    """Установленные раскладки (HKL)."""
+    _need_windows()
+    user32.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    n = user32.GetKeyboardLayoutList(0, None)
+    arr = (ctypes.c_void_p * n)()
+    user32.GetKeyboardLayoutList(n, arr)
+    return [a or 0 for a in arr]
+
+
+def current_layout(hwnd: int | None = None) -> int:
+    """Язык раскладки окна (младший байт: 0x09 — английский, 0x19 — русский)."""
+    _need_windows()
+    user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+    user32.GetKeyboardLayout.restype = ctypes.c_void_p
+    hwnd = hwnd or user32.GetForegroundWindow()
+    tid = user32.GetWindowThreadProcessId(hwnd, None)
+    return (user32.GetKeyboardLayout(tid) or 0) & 0xFF
+
+
+def switch_layout(hwnd: int, hkl: int | None = None) -> None:
+    """Сменить раскладку в окне: на hkl или следующую (как Alt+Shift)."""
+    _need_windows()
+    lparam = ctypes.c_ssize_t(hkl).value if hkl is not None else 1          # HKL_NEXT
+    user32.PostMessageW(hwnd, 0x0050, 0, lparam)                            # WM_INPUTLANGCHANGEREQUEST
+
+
+_QUIET = ctypes.c_ulonglong(0x0D83063EA3BF1C75) if IS_WINDOWS else None   # WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED
+
+
+def focus_assist(mode: int | None = None) -> int | None:
+    """«Не беспокоить» (фокусировка внимания): 0 — выкл., 1 — только важное, 2 — только будильники.
+    mode=None — узнать. Возвращает режим после действия или None, если Windows не ответила."""
+    _need_windows()
+    ntdll = ctypes.WinDLL("ntdll")
+    if mode is not None:
+        val = wintypes.DWORD(mode)
+        ntdll.NtUpdateWnfStateData(ctypes.byref(_QUIET), ctypes.byref(val), 4, None, None, 0, 0)
+    stamp, size, buf = wintypes.ULONG(), wintypes.ULONG(4), wintypes.DWORD()
+    if ntdll.NtQueryWnfStateData(ctypes.byref(_QUIET), None, None, ctypes.byref(stamp),
+                                 ctypes.byref(buf), ctypes.byref(size)) != 0:
+        return None
+    return buf.value
+
+
+def shutdown_in(seconds: int) -> bool:
+    """Запланировать выключение (Windows покажет уведомление). False — уже что-то запланировано."""
+    _need_windows()
+    p = subprocess.run(["shutdown", "/s", "/t", str(max(0, int(seconds)))], capture_output=True,
+                       creationflags=0x08000000)
+    return p.returncode == 0
+
+
+def shutdown_cancel() -> bool:
+    """Отменить запланированное выключение. False — ничего не было запланировано."""
+    _need_windows()
+    p = subprocess.run(["shutdown", "/a"], capture_output=True, creationflags=0x08000000)
+    return p.returncode == 0

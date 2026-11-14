@@ -35,7 +35,8 @@ def site_url(site: str) -> str:
 @skill("open_site", "Открыть сайт",
        "Открыть сайт в браузере. url — адрес сайта, например youtube.com, vk.com, ozon.ru.",
        params=[Param("url", "string", "адрес сайта")],
-       examples=["открой {site}", "зайди на {site}", "открой сайт {site}"],
+       examples=["открой {site}", "зайди на {site}", "открой сайт {site}", "включи {site}", "зайди в {site}",
+                 "перейди на {site}", "перейди в {site}", "запусти {site}", "открой мне {site}"],
        category="Интернет")
 def open_site(ctx, url: str):
     winapi.open_path(site_url(url))

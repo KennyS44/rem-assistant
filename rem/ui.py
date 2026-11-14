@@ -117,6 +117,7 @@ class UI:
             m("Проверить слово активации…", lambda: self.call(self.open_wake_test)),
             m(lambda _: f"Установить обновление {self.app.pending_update[0]}" if self.app.pending_update else "",
               lambda: self.call(self._confirm_update), visible=lambda _: bool(self.app.pending_update)),
+            m("Сообщить об ошибке…", lambda: self._report()),
             m("Журнал команд", lambda: self._open(self.app.assistant.journal)),
             m("Папка с настройками", lambda: self._open(cfgmod.app_dir())),
             pystray.Menu.SEPARATOR,
@@ -166,6 +167,10 @@ class UI:
         if path:
             subprocess.Popen([str(path)])
             self.app.quit()
+
+    def _report(self) -> None:
+        from .report import open_report
+        self._open(open_report(__version__, cfgmod.app_dir()))
 
     @staticmethod
     def _open(path) -> None:

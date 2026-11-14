@@ -117,6 +117,7 @@ class App:
                                  mute=self.voice.speaking, echo=echo, voice=self.voice)
         self.listener.barge_in = bool(self.config.get("barge_in", True))
         self.listener.pause = float(self.config.get("end_pause", 1.2))
+        self.listener.on_guard = self.assistant.prewarm    # «Рэм» услышана — модель грузится, пока договаривают
         self.assistant.listener = self.listener
         self.ui.call(self.ui.start_tray)
         threading.Thread(target=self.assistant.watch_game_mode, args=(self.stop,), daemon=True).start()
@@ -415,6 +416,15 @@ def selftest(report: str | None = None) -> int:
               and fp.match("обнови браузер").actions == [("press_keys", {"action": "reload"})]
               and fp.match("в музыку").actions == [("music", {"action": "play"})]
               and fp.match("отправь сообщение").actions[0][0] == "send_message")
+        check("таймер, время, сайты, вежливость — без модели",
+              fp.match("поставь таймер на полчаса").actions == [("set_timer", {"minutes": 30})]
+              and fp.match("сколько время").actions == [("tell_time", {})]
+              and fp.match("открой ютюб").actions == [("open_site", {"url": "youtube.com"})]
+              and fp.match("спасибо").actions[0][0] == "small_talk")
+        with tempfile.TemporaryDirectory() as d:
+            from .report import open_report
+            page = open_report(__version__, Path(d), "проверка")
+            check("отчёт разработчику собирается", "issues/new" in page.read_text(encoding="utf-8"))
         try:
             names = winapi.start_apps()
             check(f"программы «Пуска» с приложениями Магазина: {len(names)}", len(names) > 0)

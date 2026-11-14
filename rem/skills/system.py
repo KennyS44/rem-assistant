@@ -6,7 +6,7 @@ import os
 import re
 
 from .. import winapi
-from ..text import duration_ru, elapsed_ru, plural
+from ..text import duration_ru, elapsed_ru, norm, plural
 from .base import Param, skill
 
 FOLDERS = ["desktop", "downloads", "documents", "pictures", "music", "videos"]
@@ -45,7 +45,8 @@ def create_folder(ctx, name: str, where: str = "desktop"):
 
 
 @skill("screenshot", "Скриншот", "Сделать снимок экрана и сохранить в папку «Изображения».",
-       examples=["скриншот", "сделай скриншот", "сфоткай экран", "снимок экрана"],
+       examples=["скриншот", "сделай скриншот", "сфоткай экран", "снимок экрана", "сделай скриншот экрана",
+                 "скрин", "сделай скрин", "заскринь", "заскринь экран", "сделай снимок экрана"],
        category="Система")
 def screenshot(ctx):
     from PIL import ImageGrab
@@ -63,7 +64,8 @@ def minimize_all(ctx):
 
 
 @skill("lock_pc", "Заблокировать компьютер", "Заблокировать компьютер (экран входа).",
-       examples=["заблокируй компьютер", "заблокируй комп", "блокировка"],
+       examples=["заблокируй компьютер", "заблокируй комп", "блокировка", "заблокируй экран", "заблокируй",
+                 "заблокируй ноутбук"],
        category="Питание")
 def lock_pc(ctx):
     winapi.lock_workstation()
@@ -95,7 +97,9 @@ WEEKDAYS = ["понедельник", "вторник", "среда", "четв�
 
 
 @skill("tell_time", "Который час", "Сказать текущее время.",
-       examples=["который час", "сколько времени", "сколько сейчас времени", "время"],
+       examples=["который час", "сколько времени", "сколько сейчас времени", "время", "сколько время",
+                 "который сейчас час", "скажи время", "подскажи время", "сколько на часах", "сколько сейчас время",
+                 "скажи сколько времени", "подскажи который час"],
        category="Информация")
 def tell_time(ctx, now: dt.datetime | None = None):
     now = now or dt.datetime.now()
@@ -105,18 +109,58 @@ def tell_time(ctx, now: dt.datetime | None = None):
 
 
 @skill("tell_date", "Какое сегодня число", "Сказать сегодняшнюю дату и день недели.",
-       examples=["какое сегодня число", "какой сегодня день", "какая дата", "какое число"],
+       examples=["какое сегодня число", "какой сегодня день", "какая дата", "какое число", "какое число сегодня",
+                 "какой сегодня день недели", "какой день недели", "какой сегодня день недели и число",
+                 "какая сегодня дата", "скажи дату", "какое сегодня число и день недели"],
        category="Информация")
 def tell_date(ctx, now: dt.datetime | None = None):
     now = now or dt.datetime.now()
     return f"Сегодня {WEEKDAYS[now.weekday()]}, {now.day} {MONTHS[now.month - 1]}."
 
 
+_TIMER = re.compile(r"^(?:(?:поставь|заведи|включи|запусти|сделай|установи)\s+)?(?:таймер|засеки|отсчет)\s+"
+                    r"(?:на\s+)?(?P<d>.+)$")
+_UNIT = {"сек": 1, "мин": 60, "час": 3600}
+
+
+def parse_duration(text: str) -> int | None:
+    """«полчаса» → 1800, «1 час 20 минут» → 4800, «2 минуты 30 секунд» → 150, «5» → 300 (минуты)."""
+    t = text.replace("полтора часа", "90 минут").replace("полторы минуты", "90 секунд")
+    t = t.replace("полчаса", "30 минут").replace("пол часа", "30 минут").replace("пару", "2").replace("пара", "2")
+    words, total, num = t.split(), 0, None
+    for w in words:
+        if w.isdigit():
+            num = int(w)
+            continue
+        unit = next((v for k, v in _UNIT.items() if w.startswith(k)), None)
+        if unit is None:
+            return None                             # лишние слова — пусть решает модель
+        total += (1 if num is None else num) * unit   # «час», «минуту» — одна
+        num = None
+    if num is not None:
+        if total:
+            return None
+        total = num * 60                            # «таймер на 5» — минуты
+    return total or None
+
+
+def _parse_timer(text: str):
+    from ..fastpath import clean                     # fastpath сам импортирует умения
+    m = _TIMER.match(clean(text))
+    if not m:
+        return None
+    total = parse_duration(m.group("d"))
+    if not total or total > 600 * 60:
+        return None
+    args = {"minutes": total // 60, "seconds": total % 60}
+    return {k: v for k, v in args.items() if v}
+
+
 @skill("set_timer", "Таймер", "Поставить таймер; по окончании прозвучит сигнал.",
        params=[Param("minutes", "integer", "минуты", minimum=0, maximum=600, required=False),
                Param("seconds", "integer", "секунды", minimum=0, maximum=3600, required=False)],
        examples=["таймер на {n} минут", "поставь таймер на {n} минут", "засеки {n} минут"],
-       category="Информация")
+       category="Информация", parse=_parse_timer)
 def set_timer(ctx, minutes: int = 0, seconds: int = 0):
     total = int(minutes or 0) * 60 + int(seconds or 0)
     if total <= 0:
@@ -132,3 +176,50 @@ def set_timer(ctx, minutes: int = 0, seconds: int = 0):
 def cancel_timers(ctx):
     n = ctx.timers.cancel_all()
     return "Таймеры отменены." if n else "Таймеров нет."
+
+
+# ——— «сообщи об ошибке» ———
+
+_REPORT = re.compile(r"^(?:сообщи\s+(?:об|о|про)\s+(?:ошибк\w*|проблем\w*|баг\w*)|"
+                     r"(?:отправь|пошли)\s+отчет\w*(?:\s+об\s+ошибк\w*)?)"
+                     r"(?:\s+разработчику)?(?:\s+(?P<note>.+))?$")
+
+
+def _parse_report(text: str):
+    m = _REPORT.match(norm(text).replace("ё", "е"))
+    return {"note": (m.group("note") or "").strip()} if m else None
+
+
+@skill("report_problem", "Сообщить об ошибке",
+       "Открыть заполненную заявку разработчику: последние команды и ошибки.",
+       params=[Param("note", "string", "что случилось", required=False)],
+       category="Система", model=False, parse=_parse_report)
+def report_problem(ctx, note: str = ""):
+    from .. import __version__
+    from ..config import app_dir
+    from ..report import open_report
+    winapi.open_path(str(open_report(__version__, app_dir(), note)))
+    return ctx.phrase("Открыла заявку в браузере — проверьте текст и нажмите «Submit new issue».",
+                      "Рэм открыла заявку в браузере — проверьте текст и нажмите «Submit new issue».")
+
+
+# ——— вежливость без модели: «спасибо», «привет» — ответ сразу ———
+
+TALK = {
+    "thanks": (["спасибо", "спасибо большое", "благодарю", "спасибо рэм", "молодец", "умница", "отлично спасибо"],
+               "Пожалуйста!", "Рэм рада помочь."),
+    "hello": (["привет", "здравствуй", "здравствуйте", "добрый день", "добрый вечер", "доброе утро", "приветик"],
+              "Здравствуйте! Слушаю.", "Здравствуйте! Рэм слушает вас."),
+    "how": (["как дела", "как ты", "как поживаешь", "как настроение", "ты тут", "ты здесь", "ты меня слышишь"],
+            "Всё хорошо, слушаю.", "У Рэм всё хорошо. Рэм слушает."),
+    "night": (["спокойной ночи", "доброй ночи"], "Спокойной ночи!", "Спокойной ночи. Рэм будет рядом."),
+}
+
+
+@skill("small_talk", "Вежливость", "Ответить на «спасибо», «привет», «как дела».",
+       params=[Param("kind", "string", "что сказали", enum=list(TALK))],
+       examples=[(p, {"kind": k}) for k, (phrases, _, _) in TALK.items() for p in phrases],
+       category="Информация", model=False)
+def small_talk(ctx, kind: str):
+    _, plain, rem = TALK[kind]
+    return ctx.phrase(plain, rem)

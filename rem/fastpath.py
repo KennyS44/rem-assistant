@@ -50,6 +50,27 @@ def clean(text: str) -> str:
     return " ".join(w for w in t.split() if w not in FILLER)
 
 
+def base_forms(word: str) -> list[str]:
+    """«почту» → [«почту», «почта»], «телегу» → [«телегу», «телега»]: название, сказанное в падеже."""
+    out = [word]
+    for end, to in (("у", "а"), ("ю", "я"), ("е", "а"), ("ой", "а"), ("ом", ""), ("е", "")):
+        if word.endswith(end) and len(word) - len(end) >= 2:
+            out.append(word[:-len(end)] + to)
+    return out
+
+
+def find_site(x: str) -> str | None:
+    """Сайт по сказанному: точно, в падеже или с ослышкой распознавания («ютюб» → «ютуб»)."""
+    for form in base_forms(x):
+        if form in SITES:
+            return SITES[form]
+    if len(x) >= 4 and " " not in x:
+        best = max(SITES, key=lambda k: fuzz.ratio(x, k))
+        if fuzz.ratio(x, best) >= 75 and abs(len(best) - len(x)) <= 1 and best[0] == x[0]:
+            return SITES[best]
+    return None
+
+
 def _template_regex(example: str) -> re.Pattern:
     """«громкость {n}» → регулярка, допускающая «на 30», «30 процентов», «30%»."""
     rx = ""
@@ -101,6 +122,7 @@ class FastPath:
                     return Plan(actions=[(s.name, args)], source="fast")
 
         # почти точное совпадение: опечатка распознавания, но первое слово то же
+        # (похожее не годится: «включи» и «выключи» совпадают на 92 %)
         first = t.split()[0]
         best, best_score = None, 0.0
         for phrase, action in self.exact.items():
@@ -125,8 +147,8 @@ class FastPath:
                     continue
                 return Plan(actions=[(s.name, {p.name: v})], source="fast")
             x = (m.groupdict().get("x") or "").strip()
-            if "{site}" in ex and x in SITES:
-                return Plan(actions=[(s.name, {"url": SITES[x]})], source="fast")
+            if "{site}" in ex and find_site(x):
+                return Plan(actions=[(s.name, {"url": find_site(x)})], source="fast")
             if "{label}" in ex and len(x.split()) <= 4 and " и " not in f" {x} ":   # «нажми сохранить и закрой» — модели
                 return Plan(actions=[(s.name, {"name": x})], source="fast")
             if "{app}" in ex and self._is_known_app(x):
@@ -135,7 +157,7 @@ class FastPath:
 
     def _is_known_app(self, x: str) -> bool:
         x = _KIND.sub("", x)                       # «запусти приложение яндекс музыка»
-        if x in BROWSER_WORDS or x in SYSTEM_APPS or x in ALIASES:
+        if any(f in BROWSER_WORDS or f in SYSTEM_APPS or f in ALIASES for f in base_forms(x)):
             return True
         if self.apps is None:
             return False

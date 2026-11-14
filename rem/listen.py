@@ -357,6 +357,7 @@ class Listener:
         self.barge_in = True                    # настройка «перебивать голосом»
         self.barge_partial = True               # замолкать по промежуточному результату сторожа
         self.pause = 1.2                        # тишина, после которой фраза закончена (настройка)
+        self.on_guard = lambda: None            # сторож услышал «Рэм» — можно заранее будить модель
         self.paused = threading.Event()
         self.stopped = threading.Event()
         self.noise = NoiseFloor()
@@ -487,6 +488,10 @@ class Listener:
             if audio is None:
                 continue
             self.stats["guard"] += 1
+            try:
+                self.on_guard()                 # модель грузится, пока человек договаривает
+            except Exception:
+                pass
             # сторож мог закончить фразу на паузе после «Рэм,» — дослушиваем до конца речи
             tail = record_phrase(self.mic, self.noise, max_len=12, silence=self.pause, already_speaking=True)
             if tail is not None:

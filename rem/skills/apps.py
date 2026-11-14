@@ -110,6 +110,13 @@ class AppIndex:
             return None
         if q in SYSTEM_APPS:
             return q, SYSTEM_APPS[q]
+        from ..fastpath import base_forms              # fastpath сам импортирует умения
+        for form in base_forms(q):                      # «телегу» → «телега», «дискорде» → «дискорд»
+            if form in SYSTEM_APPS:
+                return form, SYSTEM_APPS[form]
+            if form in ALIASES or form in self.apps:
+                q = form
+                break
         q = ALIASES.get(q, q)
         if q in self.apps:
             return q, self.apps[q]
@@ -170,7 +177,9 @@ def open_app(ctx, name: str):
 
 def _matching_pids(ctx, name: str) -> set[int]:
     import psutil
+    from ..fastpath import base_forms
     q = _KIND.sub("", norm(name))
+    q = next((f for f in base_forms(q) if f in ALIASES or f in SYSTEM_APPS), q)    # «закрой телегу»
     if q in BROWSER_WORDS or re.fullmatch(r"браузер\w*", q):     # «окно браузера»
         return {p.info["pid"] for p in psutil.process_iter(["pid", "name"])
                 if (p.info["name"] or "").lower() in BROWSER_EXES}

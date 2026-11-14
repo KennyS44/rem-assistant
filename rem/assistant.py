@@ -70,6 +70,7 @@ class Assistant:
         self._cloud_warned = False
         self.recent: deque = deque(maxlen=4)       # (когда, команда, результаты, ответ) — память разговора
         self._failed = ""
+        self._warmed_at = -1e9                     # когда последний раз будили модель
         self.journal = app_dir() / "actions.log"
         self.book = Phrasebook(app_dir() / "phrasebook.json")
         self.last: tuple[str, str] = ("", "")     # прошлая команда и откуда план — для «не то»
@@ -132,10 +133,14 @@ class Assistant:
             log.debug("выгрузка модели: %s", e)
 
     def prewarm(self) -> None:
-        """Загрузить модель, пока человек договаривает команду (после «голого» слова).
+        """Загрузить модель, пока человек договаривает команду (сторож услышал «Рэм»).
         С облачной моделью видеокарту не занимаем: локальная нужна, только если облако не ответит."""
         if self.game_mode or self.config.get("cloud_model"):
             return
+        now = time.monotonic()
+        if now - self._warmed_at < 60:          # модель и так в памяти (держится keep_alive минут)
+            return
+        self._warmed_at = now
 
         def go():
             try:
@@ -324,6 +329,8 @@ class Assistant:
         if key in UNDO:
             said, source = self.last
             self.last = ("", "")
+            if said:
+                self._mark_wrong(said)
             if said and self.book.forget(said):
                 return self.phrase(f"Поняла, забыла, как выполнять «{said}». В следующий раз спрошу модель.",
                                    f"Простите. Рэм забыла, как выполнять «{said}».")
@@ -546,6 +553,15 @@ class Assistant:
         self.status_cb("thinking")
         log.info("ответ на «%s»: «%s»", question, text)
         return "" if is_stop(text) or norm(text) in ("отмена", "отмени", "не надо", "никому", "ничего") else text
+
+    def _mark_wrong(self, said: str) -> None:
+        """«Не то» — в журнал: в отчёте разработчику эта команда будет отмечена как ошибка."""
+        rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "text": said, "wrong": True}
+        try:
+            with open(self.journal, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def _write_journal(self, text: str, plan: Plan, results: list, seconds: float, spoken: str = "") -> None:
         rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "text": text,

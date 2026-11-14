@@ -13,6 +13,7 @@ from typing import Callable
 from . import winapi
 from .brain import CLICK_HINT, Brain, Ollama, Plan, claims_done, windows_context
 from .config import app_dir
+from .text import norm
 from .fastpath import FastPath, clean
 from .phrasebook import FORGET_ALL, UNDO, Phrasebook, learnable
 from .skills import active_skills
@@ -43,6 +44,7 @@ class Context:
     copy: Callable[[str], None] = lambda text: None             # положить в буфер обмена
     show: Callable[[str], None] = lambda text: None             # показать, не читая вслух
     phrase: Callable[[str, str], str] = lambda plain, rem: plain    # ответ обычный / «в стиле Рэм»
+    hear: Callable[[str], str] = lambda question: ""            # спросить голосом и выслушать ответ
 
 
 class Assistant:
@@ -59,7 +61,7 @@ class Assistant:
         self.reminders = Reminders(app_dir() / "reminders.json", self._reminder_due)
         self.ctx = Context(config, self.apps, self.timers, self.say, lambda q: self._confirm(q),
                            lambda: self.dictate(), self.reminders, self._selection, self._ask_text,
-                           self._copy, lambda text: self.notify_cb(text), self.phrase)
+                           self._copy, lambda text: self.notify_cb(text), self.phrase, self._hear)
         self.heard_at = 0.0                        # когда к Рэм обращались — будильник замолкает
         self.game_mode = False
         self.status_cb: Callable[[str], None] = lambda s: None
@@ -530,6 +532,20 @@ class Assistant:
         self.voice.wait()
         self.listener.mic.flush()
         return self.listener.hear_yes_no()
+
+    def _hear(self, question: str) -> str:
+        """Спросить («Кому написать?») и распознать ответ. Молчат или «отмена» — пустая строка."""
+        from .listen import is_stop
+        if not self.listener or not self.voice:
+            return ""
+        self.voice.say(question)
+        self.voice.wait()
+        self.listener.mic.flush()
+        self.status_cb("listening")
+        text = self.listener.hear_command(max_wait=7.0).strip()
+        self.status_cb("thinking")
+        log.info("ответ на «%s»: «%s»", question, text)
+        return "" if is_stop(text) or norm(text) in ("отмена", "отмени", "не надо", "никому", "ничего") else text
 
     def _write_journal(self, text: str, plan: Plan, results: list, seconds: float, spoken: str = "") -> None:
         rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "text": text,

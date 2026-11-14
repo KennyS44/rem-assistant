@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import os
+import re
+import threading
 from pathlib import Path
 
 from rapidfuzz import fuzz, process
@@ -45,6 +47,13 @@ SYSTEM_PROCS = {"calc.exe": "calculatorapp.exe", "notepad.exe": "notepad.exe",
                 "mspaint.exe": "mspaint.exe", "taskmgr.exe": "taskmgr.exe"}
 
 BROWSER_WORDS = {"браузер", "browser", "интернет"}
+# процессы браузеров: «окно браузера», «обнови страницу» из другого окна
+BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "browser.exe", "opera.exe", "brave.exe", "vivaldi.exe",
+                "yandex.exe", "chromium.exe", "atom.exe"}
+# музыкальные приложения — в порядке предпочтения
+MUSIC_APPS = ("яндекс музыка", "yandex music", "яндекс.музыка", "spotify", "vk музыка", "звук", "apple music",
+              "музыка", "music")
+_KIND = re.compile(r"^(?:приложени\w*|программ\w*|игр[ауы]|окно|окна)\s+")
 SKIP = ("uninstall", "удал", "readme", "help", "справк", "website", "license", "лиценз")
 
 
@@ -61,11 +70,28 @@ class AppIndex:
     """Имя ярлыка (в нижнем регистре) → путь к ярлыку."""
 
     def __init__(self, dirs: list[Path] | None = None):
+        self.store = dirs is None and winapi.IS_WINDOWS     # приложения Магазина — только в настоящем «Пуске»
         self.dirs = dirs if dirs is not None else _start_menu_dirs()
         self.apps: dict[str, str] = {}
         self.refresh()
 
     def refresh(self) -> None:
+        self._scan()
+        if self.store:                  # Get-StartApps — секунда-две; не задерживаем запуск Рэм
+            threading.Thread(target=self._add_store_apps, daemon=True).start()
+
+    def _add_store_apps(self) -> None:
+        """Приложения из Microsoft Store (Яндекс Музыка, WhatsApp…) ярлыков в «Пуске» не имеют."""
+        try:
+            found = winapi.start_apps()
+        except Exception:
+            return
+        for name, app_id in found:
+            key = norm(name)
+            if key and not any(s in key for s in SKIP):
+                self.apps.setdefault(key, "shell:AppsFolder\\" + app_id)
+
+    def _scan(self) -> None:
         self.apps.clear()
         for d in self.dirs:
             if not d.exists():
@@ -79,7 +105,7 @@ class AppIndex:
 
     def resolve(self, spoken: str) -> tuple[str, str] | None:
         """(имя, путь) для произнесённого названия или None."""
-        q = norm(spoken)
+        q = _KIND.sub("", norm(spoken))            # «приложение яндекс музыка» → «яндекс музыка»
         if not q:
             return None
         if q in SYSTEM_APPS:
@@ -94,6 +120,14 @@ class AppIndex:
             hit = process.extractOne(cand, self.apps.keys(), scorer=fuzz.WRatio, score_cutoff=82)
             if hit:
                 return hit[0], self.apps[hit[0]]
+        return None
+
+    def music(self) -> tuple[str, str] | None:
+        """Установленное музыкальное приложение: (имя, путь) или None."""
+        for want in MUSIC_APPS:
+            for name, path in list(self.apps.items()):
+                if want in name and "папк" not in name and "folder" not in name:
+                    return name, path
         return None
 
 
@@ -136,7 +170,10 @@ def open_app(ctx, name: str):
 
 def _matching_pids(ctx, name: str) -> set[int]:
     import psutil
-    q = norm(name)
+    q = _KIND.sub("", norm(name))
+    if q in BROWSER_WORDS or re.fullmatch(r"браузер\w*", q):     # «окно браузера»
+        return {p.info["pid"] for p in psutil.process_iter(["pid", "name"])
+                if (p.info["name"] or "").lower() in BROWSER_EXES}
     targets = set()
     if q in SYSTEM_APPS:
         exe = SYSTEM_APPS[q]
@@ -184,14 +221,36 @@ def close_app(ctx, name: str):
     return None
 
 
+_GLUE = {"с", "со", "где", "в", "во", "на", "про", "из", "который", "которое", "и"}
+
+
+def _by_title(rest: str, wins: list[dict]) -> list[dict]:
+    """Окна одной программы — по похожести заголовка на rest («с почтой» → «Почта — Google Chrome»)."""
+    from .screen import _score, _stems                 # без замены «почта» → сайт: в заголовках слова как есть
+    words = [w for w in norm(rest).split() if w not in _GLUE]
+    if not words:
+        return wins
+    q = " ".join(words)
+    scored = [(max(_score(_stems(q), _stems(w["title"]) or [""]), fuzz.partial_ratio(q, norm(w["title"]))), i, w)
+              for i, w in enumerate(wins)]
+    return [w for _, _, w in sorted(scored, key=lambda x: (-x[0], x[1]))]
+
+
 def find_windows(ctx, name: str) -> list[dict]:
-    """Открытые окна программы name или с name в заголовке; лучшие — первыми."""
+    """Открытые окна программы name или с name в заголовке; лучшие — первыми.
+    «хром с почтой», «окно браузера где ютуб» — окна программы, нужное по заголовку — первым."""
     wins = winapi.open_windows()
-    pids = _matching_pids(ctx, name)
+    q = _KIND.sub("", norm(name))
+    pids = _matching_pids(ctx, q)
     hits = [w for w in wins if w["pid"] in pids]
     if hits:
         return hits
-    q = norm(name)
+    words = q.split()
+    for k in range(len(words) - 1, 0, -1):          # программа — начало фразы, остальное — про заголовок
+        pids = _matching_pids(ctx, " ".join(words[:k]))
+        hits = [w for w in wins if w["pid"] in pids]
+        if hits:
+            return _by_title(" ".join(words[k:]), hits)
     scored = [(fuzz.partial_ratio(q, norm(w["title"] + " " + w["exe"].removesuffix(".exe"))), w) for w in wins]
     return [w for score, w in sorted(scored, key=lambda x: -x[0]) if score >= 80]
 
@@ -200,14 +259,42 @@ def find_windows(ctx, name: str) -> list[dict]:
        "Показать уже открытое окно: вывести на передний план, свёрнутое — развернуть. "
        "name — название программы или слова из заголовка окна (см. список открытых окон).",
        params=[Param("name", "string", "программа или часть заголовка окна")],
-       examples=["переключись на {app}", "перейди в {app}", "разверни {app}"],
+       examples=["переключись на {app}", "перейди в {app}", "разверни {app}",
+                 *[(p, {"name": "другое окно"}) for p in ("другое окно", "следующее окно", "переключись на другое окно",
+                                                          "покажи другое окно", "соседнее окно",
+                                                          "перейди в другое окно", "открой другое окно")]],
        category="Программы")
 def switch_window(ctx, name: str):
-    hits = find_windows(ctx, name)
+    fg = winapi.foreground_window()
+    wins = winapi.open_windows()                       # активное первым, дальше — как давно были впереди
+    if norm(name) in NEXT_WINDOW:                      # «другое окно» — следующее окно той же программы
+        hits = [w for w in wins if fg and w["exe"].lower() == fg["exe"].lower()]
+    else:
+        hits = find_windows(ctx, name)
     if not hits:
         return f"Окно «{name}» не найдено."
-    winapi.focus_window(hits[0]["hwnd"])
+    by_time = [w for w in wins if w in hits] == hits   # без уточнения по заголовку — порядок как на экране
+    target = hits[0]
+    if fg and len(hits) > 1 and target["hwnd"] == fg["hwnd"]:
+        # нужное уже впереди — значит, просят другое из таких же: по кругу, начиная с самого давнего
+        target = hits[-1] if by_time else hits[1]
+    winapi.focus_window(target["hwnd"])
+    same = [w for w in hits if w["exe"].lower() == target["exe"].lower()]
+    if norm(name) in NEXT_WINDOW:
+        return f"«{_short(target['title'])}»." if len(same) > 1 else "Другого такого окна нет."
+    if by_time and len(same) > 1:
+        return (f"Открыто окно «{_short(target['title'])}». Таких окон {len(same)} — скажите «другое окно», "
+                "чтобы перейти к следующему.")
     return None
+
+
+NEXT_WINDOW = {"другое окно", "следующее окно", "другое", "следующее", "соседнее окно", "второе окно"}
+
+
+def _short(title: str) -> str:
+    """«Почта — Google Chrome» → «Почта»: название программы в конце заголовка не нужно."""
+    parts = re.split(r"\s+[—–-]\s+", title)
+    return (parts[0] if len(parts) > 1 else title)[:50]
 
 
 @skill("list_windows", "Что открыто", "Перечислить открытые окна (на вопрос «что открыто?»).",

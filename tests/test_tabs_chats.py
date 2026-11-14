@@ -61,6 +61,7 @@ class FakeBrowser:
                             [Control(t, "вкладка") for t in self.tabs] if show_tabs else [Control("Back", "кнопка")])
         monkeypatch.setattr(uia, "press_control", self.press)
         monkeypatch.setattr(winapi, "press", self.key)
+        monkeypatch.setattr(winapi, "is_foreground", lambda h: True)
         monkeypatch.setattr(screen.time, "sleep", lambda s: None)
 
     def press(self, hwnds, name, kind):
@@ -142,7 +143,7 @@ def test_no_done_after_failed_step(tmp_path, monkeypatch):
     a = _assistant(client, tmp_path)
     said = []
     a.say = said.append
-    a.handle("отправь сообщение")
+    a.handle("отправь письмо")
     assert said == ["Кнопки «Отправить» в окне не видно."]
 
 
@@ -153,5 +154,5 @@ def test_real_explanation_after_failure_is_kept(tmp_path, monkeypatch):
     a = _assistant(client, tmp_path)
     said = []
     a.say = said.append
-    a.handle("отправь сообщение")
+    a.handle("отправь письмо")
     assert said == ["В этом окне нет такой кнопки, есть только «Сохранить»."]

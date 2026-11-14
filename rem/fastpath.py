@@ -11,7 +11,7 @@ from rapidfuzz import fuzz
 
 from .brain import Plan
 from .skills import Skill
-from .skills.apps import ALIASES, BROWSER_WORDS, SYSTEM_APPS
+from .skills.apps import _KIND, ALIASES, BROWSER_WORDS, SYSTEM_APPS
 from .skills.web import SITES
 from .text import norm
 
@@ -134,6 +134,7 @@ class FastPath:
         return None
 
     def _is_known_app(self, x: str) -> bool:
+        x = _KIND.sub("", x)                       # «запусти приложение яндекс музыка»
         if x in BROWSER_WORDS or x in SYSTEM_APPS or x in ALIASES:
             return True
         if self.apps is None:

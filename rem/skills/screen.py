@@ -195,17 +195,40 @@ _ORDINALS = {"перв": 1, "втор": 2, "трет": 3, "четверт": 4, "
 def tab_keys(spoken: str) -> tuple[int, ...] | None:
     """Сочетание клавиш для «следующая», «предыдущая», «последняя», «третья», «3»; иначе None (это название)."""
     vk = winapi.VK
-    q = " ".join(w for w in norm(spoken).split() if w not in ("вкладка", "вкладку", "вкладке", "на", "в", "во"))
-    if q.startswith(("следующ", "дальше", "вперед")):
+    words = [w for w in norm(spoken).split() if not w.startswith("вкладк") and w not in _TAB_GLUE]
+    q = " ".join(words)
+    if any(w.startswith(("следующ", "дальше", "вперед", "правее", "справа")) for w in words):
         return vk["ctrl"], vk["tab"]
-    if q.startswith(("предыдущ", "прошл", "назад")):
+    if any(w.startswith(("предыдущ", "прошл", "назад", "левее", "слева")) for w in words):
         return vk["ctrl"], vk["shift"], vk["tab"]
-    if q.startswith("последн"):
+    if any(w.startswith("последн") for w in words):
         return vk["ctrl"], 0x39
     m = _ORDINAL.match(q)
     n = _ORDINALS[m.group(1)] if m else int(q) if q.isdigit() else 0
     if 1 <= n <= 8:
         return vk["ctrl"], 0x30 + n
+    return None
+
+
+_TAB_GLUE = {"на", "в", "во", "номер", "включи", "переключи", "переключись", "перейди", "открой", "вернись",
+             "иди", "покажи", "давай", "сделай", "выбери", "зайди", "мне", "пожалуйста", "одну", "соседнюю"}
+_TAB_WHICH = r"(?:следующ\w*|предыдущ\w*|прошл\w*|последн\w*|соседн\w* (?:справа|слева)|" \
+             r"(?:перв|втор|трет|четверт|пят|шест|седьм|восьм)(?:ая|ую|ой|ья|ью|ей|ий|ый|ое)|[1-8])"
+_TAB_RULES = [re.compile(r) for r in (
+    rf"^(?:(?:включи|переключи(?:сь)?|перейди|открой|вернись|иди|покажи|сделай|выбери|зайди)\s+)?"
+    rf"(?:(?:на|в|во)\s+)?(?P<w>{_TAB_WHICH})\s+вкладк\w*$",
+    r"^(?:(?:переключи(?:сь)?|перейди|иди)\s+)?(?:на\s+)?вкладк\w*\s+(?:номер\s+)?(?P<w>[1-8]|назад|вперед)$",
+    r"^(?:(?:переключи(?:сь)?|перейди|иди|вернись)\s+)?(?:на\s+)?(?P<w>вкладк\w*\s+(?:левее|правее|слева|справа))$")]
+
+
+def _parse_tab(text: str):
+    """«включи предыдущую вкладку», «вернись на прошлую вкладку», «вкладка номер 3» — без модели."""
+    from ..fastpath import clean                     # fastpath сам импортирует умения
+    t = clean(text)
+    for rx in _TAB_RULES:
+        m = rx.match(t)
+        if m and tab_keys(m.group("w")) is not None:
+            return {"name": m.group("w")}
     return None
 
 
@@ -228,11 +251,14 @@ def _title() -> str:
                    for verb in ("", "переключись на ", "перейди на ", "открой ")],
                  ("переключи вкладку", {"name": "следующая"}), ("вкладку вперед", {"name": "следующая"}),
                  ("вкладку назад", {"name": "предыдущая"})],
-       category="Окна")
+       category="Окна", parse=_parse_tab)
 def switch_tab(ctx, name: str):
     w = winapi.foreground_window()
     if not w:
         return "Нет открытых окон."
+    if not winapi.is_foreground(w["hwnd"]):
+        winapi.focus_window(w["hwnd"])       # впереди окно Рэм — клавиши должны уйти в окно человека
+        time.sleep(0.15)
     keys = tab_keys(name)
     if keys:
         winapi.press(*keys)
@@ -312,9 +338,15 @@ def open_chat(ctx, name: str):
     who = chat_name(name)
     if not who:
         return ctx.phrase("Не расслышала, какой чат открыть.", "Простите, какой чат открыть?")
+    _, err = _open_chat(ctx, who)
+    return err
+
+
+def _open_chat(ctx, who: str) -> tuple[str, str | None]:
+    """Открыть в Telegram чат who → (название чата, None) или ("", что не так)."""
     w = _telegram(ctx)
     if w is None:
-        return "Telegram не найден."
+        return "", "Telegram не найден."
     hwnds = [w["hwnd"]]
     found = uia.controls(hwnds)
     rows = _chats(found)
@@ -324,8 +356,8 @@ def open_chat(ctx, name: str):
         search = uia.best_match("поиск", fields)
         if search is None:
             if not rows:
-                return "Telegram не показывает список чатов. Обновите Telegram до последней версии."
-            return f"Чата «{who}» в списке не видно."
+                return "", "Telegram не показывает список чатов. Обновите Telegram до последней версии."
+            return "", f"Чата «{who}» в списке не видно."
         uia.focus_field(hwnds, search.name)
         winapi.press(winapi.VK["ctrl"], winapi.VK["a"])  # старый текст поиска заменится
         winapi.type_unicode(" ".join(_stems(who)))         # «мамой» → «мам»: Telegram ищет по началу слов
@@ -335,7 +367,111 @@ def open_chat(ctx, name: str):
             rows = _chats(uia.controls(hwnds))
             i = find_named(who, [chat_title(c.name) for c in rows])
         if i is None:
-            return ctx.phrase(f"Чат «{who}» в Telegram не нашла.", f"Простите, Рэм не нашла в Telegram чат «{who}».")
+            return "", ctx.phrase(f"Чат «{who}» в Telegram не нашла.",
+                                  f"Простите, Рэм не нашла в Telegram чат «{who}».")
+    title = chat_title(rows[i].name)
     if not uia.press_control(hwnds, rows[i].name, "пункт списка"):
-        return f"Чат «{chat_title(rows[i].name)}» не открылся."
-    return None
+        return "", f"Чат «{title}» не открылся."
+    return title, None
+
+
+# ——— «отправь сообщение маме: буду в семь» ———
+# Кому и что — в одной фразе или по вопросам: «Кому написать?», «Что написать?».
+# Перед отправкой Рэм читает сообщение вслух и ждёт «да»: распознавание могло ошибиться.
+
+_SEND = re.compile(r"^(?:отправь|напиши|пошли|скинь|отправить|написать)\s+(?:(?:сообщение|сообщеньку|смс|sms|"
+                   r"эсэмэску|весточку)(?:\s+|$)|(?:в\s+)?(?:телеграм\w*|телег\w*|тг)(?:\s+|$))(?P<rest>.*)$")
+_TG = re.compile(r"\s*\b(?:в\s+)?(?:телеграм\w*|телег\w*|тг|telegram)\b\s*")
+_TO = re.compile(r"^(?:для|в\s+чат|чат|в\s+группу|группе)\s+")
+_SAY = re.compile(r"^(?:что|чтобы|текст|с\s+текстом|такое|следующее)\s+")
+
+
+def _parse_send(text: str):
+    t = norm(text).replace("ё", "е")
+    m = _SEND.match(t)
+    if not m:
+        return None
+    rest = _TG.sub(" ", " " + m.group("rest")).strip()
+    if rest in ("это", "его", "ее", "их", "файл"):        # «отправь это в телеграм» — не сообщение
+        return None
+    return {"said": text, "rest": rest}
+
+
+def split_recipient(rest: str, chats: list[str]) -> tuple[str, str]:
+    """«маме буду в семь» → («маме», «буду в семь»): кому — самое длинное начало, похожее на чат."""
+    words = _TO.sub("", rest).split()
+    for k in range(min(3, len(words)), 0, -1):
+        if find_named(" ".join(words[:k]), chats) is not None:
+            return " ".join(words[:k]), " ".join(words[k:])
+    return (words[0], " ".join(words[1:])) if words else ("", "")
+
+
+def _original(said: str, text: str) -> str:
+    """Текст сообщения как сказан — с заглавными и знаками («буду в 7, целую»), а не нормализованный."""
+    words = text.split()
+    if not words:
+        return ""
+    m = re.search(r"\b" + re.escape(words[0]) + r"\b.*$", said.replace("ё", "е"), re.I | re.S)
+    out = said[m.start():].strip() if m else text
+    out = out.strip(" .")
+    return out[:1].upper() + out[1:]
+
+
+def _typed_text(w: dict) -> str:
+    """Текст, уже набранный в поле сообщения окна w (поиск и адресная строка — не в счёт)."""
+    fields = [c for c in uia.controls([w["hwnd"]]) if c.kind == "поле" and c.value.strip()
+              and not re.search(r"поиск|search|адрес|address|url", c.name.lower())]
+    return " ".join(fields[-1].value.split()) if fields else ""
+
+
+@skill("send_message", "Отправить сообщение",
+       "Отправить сообщение в Telegram: кому и что — из фразы или по вопросам; отправка после «да».",
+       params=[Param("said", "string", "фраза целиком"), Param("rest", "string", "кому и что", required=False)],
+       category="Окна", model=False, parse=_parse_send)
+def send_message(ctx, said: str, rest: str = ""):
+    fg = winapi.foreground_window()
+    in_chat = bool(fg) and any(m in fg["exe"].lower() for m in MESSENGERS)
+    if not rest and fg:                                   # текст уже набран — «отправь сообщение» значит «отправь его»
+        typed = _typed_text(fg)
+        if typed:
+            if not winapi.is_foreground(fg["hwnd"]):
+                winapi.focus_window(fg["hwnd"])
+                time.sleep(0.3)
+            if not ctx.confirm(f"Отправить «{typed[:80]}»"):
+                return ctx.phrase("Хорошо, не отправляю.", "Хорошо, Рэм не будет.")
+            winapi.press(winapi.VK["enter"])
+            return ctx.phrase("Отправлено.", "Рэм отправила.")
+    who, what = "", ""
+    if _SAY.match(rest):                                  # «отправь сообщение, что я опоздаю» — кому не сказано
+        rest, what = "", _SAY.sub("", rest)
+    if rest:
+        tg = _telegram(ctx)
+        chats = [chat_title(c.name) for c in _chats(uia.controls([tg["hwnd"]]))] if tg else []
+        who, what = split_recipient(rest, chats)
+        what = _SAY.sub("", what)
+    elif not in_chat:
+        who = chat_name(ctx.hear(ctx.phrase("Кому написать?", "Кому Рэм напишет?")))
+        if not who:
+            raise Cancelled
+    title = ""
+    if who:
+        title, err = _open_chat(ctx, chat_name(who))
+        if err:
+            return err
+        time.sleep(0.6)                                   # чат открылся, курсор — в поле сообщения
+    elif not winapi.is_foreground(fg["hwnd"]):            # пишем в открытый чат; впереди было окно Рэм
+        winapi.focus_window(fg["hwnd"])
+        time.sleep(0.3)
+    if what:
+        what = _original(said, what)
+    else:
+        what = ctx.hear("Что написать?").strip()
+        if not what:
+            raise Cancelled
+    winapi.type_unicode(what)
+    to = f" — {title}" if title else ""
+    if not ctx.confirm(f"Отправить{to}: «{what}»"):
+        return ctx.phrase("Хорошо, не отправляю — текст остался в поле.",
+                          "Хорошо, Рэм не отправила — текст остался в поле.")
+    winapi.press(winapi.VK["enter"])
+    return ctx.phrase("Отправлено.", "Рэм отправила.")

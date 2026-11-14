@@ -321,6 +321,22 @@ STOP_WORDS = {"стоп", "хватит", "замолчи", "молчи", "по�
               "все", "понятно", "ясно", "спасибо", "отмена", "не надо"}
 
 
+# фраза оборвалась на полуслове: «открой…», «напиши маме и…», «поставь таймер на…» — дослушать
+_DANGLING = {"и", "а", "но", "или", "в", "во", "на", "с", "со", "к", "ко", "по", "для", "за", "из", "от", "до",
+             "о", "об", "про", "у", "что", "чтобы", "как", "через", "мне", "его", "ее", "это", "эту", "этот"}
+_BARE_VERBS = {"открой", "включи", "запусти", "отправь", "напиши", "найди", "поставь", "перейди", "сделай",
+               "покажи", "закрой", "переключи", "переключись", "скажи", "напомни", "выключи", "набери", "добавь",
+               "перемести", "переименуй", "удали", "вставь", "введи", "позвони"}
+
+
+def unfinished(text: str) -> bool:
+    """Команда явно не договорена — человек сделал паузу посреди фразы."""
+    words = re.sub(r"[^а-яёa-z0-9 ]", " ", text.lower()).replace("ё", "е").split()
+    if not words:
+        return False
+    return words[-1] in _DANGLING or (len(words) == 1 and words[0] in _BARE_VERBS)
+
+
 def is_stop(text: str) -> bool:
     t = " ".join(re.sub(r"[^а-яё ]", " ", text.lower()).replace("ё", "е").split())
     return t in STOP_WORDS or (bool(t) and all(w in STOP_WORDS for w in t.split()))
@@ -340,6 +356,7 @@ class Listener:
         self.voice = voice                      # speech.Voice — замолчать, когда перебили
         self.barge_in = True                    # настройка «перебивать голосом»
         self.barge_partial = True               # замолкать по промежуточному результату сторожа
+        self.pause = 1.2                        # тишина, после которой фраза закончена (настройка)
         self.paused = threading.Event()
         self.stopped = threading.Event()
         self.noise = NoiseFloor()
@@ -402,7 +419,7 @@ class Listener:
         self.stats["barge"] += 1
         g.reset()
         time.sleep(0.15)                        # хвост её голоса в комнате
-        tail = record_phrase(self.mic, self.noise, max_wait=2.0, max_len=8, silence=0.7,
+        tail = record_phrase(self.mic, self.noise, max_wait=2.0, max_len=8, silence=self.pause,
                              already_speaking=not final, clean=self._clean)
         whole = np.concatenate([audio, tail]) if tail is not None else audio
         text = self.asr.recognize(whole)
@@ -410,7 +427,7 @@ class Listener:
         if not ok:
             command = self.asr.recognize(tail) if tail is not None else ""
         if not command.strip(" .,!?"):          # «Рэм, …» и пауза — ждём саму команду
-            more = record_phrase(self.mic, self.noise, max_wait=1.5, max_len=8, silence=0.7, clean=self._clean)
+            more = record_phrase(self.mic, self.noise, max_wait=1.5, max_len=8, silence=self.pause, clean=self._clean)
             command = self.asr.recognize(more) if more is not None else ""
         log.info("перебили: «%s» → «%s»", text, command)
         return command
@@ -471,7 +488,7 @@ class Listener:
                 continue
             self.stats["guard"] += 1
             # сторож мог закончить фразу на паузе после «Рэм,» — дослушиваем до конца речи
-            tail = record_phrase(self.mic, self.noise, max_len=8, silence=0.7, already_speaking=True)
+            tail = record_phrase(self.mic, self.noise, max_len=12, silence=self.pause, already_speaking=True)
             if tail is not None:
                 audio = np.concatenate([audio, tail])
             t = time.perf_counter()
@@ -490,6 +507,8 @@ class Listener:
                     on_rejected(text)
                 continue
             self.stats["accepted"] += 1
+            if command and unfinished(command):
+                command = self._finish(audio, command)
             if command:
                 on_command(command)
             else:
@@ -508,10 +527,27 @@ class Listener:
         self.guard.reset()
         self.mic.flush()
 
-    def hear_command(self) -> str:
-        """После «голого» слова активации: записать и распознать команду."""
-        audio = record_phrase(self.mic, self.noise)
-        return self.asr.recognize(audio) if audio is not None else ""
+    def _finish(self, audio: np.ndarray, command: str) -> str:
+        """Команда оборвалась на полуслове — дослушать продолжение и распознать всё вместе."""
+        more = record_phrase(self.mic, self.noise, max_wait=2.0, max_len=10, silence=self.pause)
+        if more is None:
+            return command
+        text = self.asr.recognize(np.concatenate([audio, more]))
+        ok, whole = find_wake(text, self.wake, self.is_word)
+        log.info("дослушала: «%s» → «%s»", command, whole if ok else text)
+        return whole if ok else text
+
+    def hear_command(self, max_wait: float = 5.0) -> str:
+        """После «голого» слова активации (или вопроса Рэм): записать и распознать команду."""
+        audio = record_phrase(self.mic, self.noise, max_wait=max_wait, max_len=15, silence=self.pause)
+        if audio is None:
+            return ""
+        text = self.asr.recognize(audio)
+        if unfinished(text):
+            more = record_phrase(self.mic, self.noise, max_wait=2.0, max_len=10, silence=self.pause)
+            if more is not None:
+                text = self.asr.recognize(np.concatenate([audio, more]))
+        return text
 
     def hear_yes_no(self, timeout: float = 5.0) -> bool:
         """Подтверждение: True только на явное «да»."""

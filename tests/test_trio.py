@@ -197,7 +197,7 @@ def test_wait_voice_runs_barge_command(monkeypatch):
             pass
 
     class Listener:
-        heard = ["Открой музыку."]
+        heard = ["Открой сайт с музыкой."]
 
         def can_barge(self):
             return True

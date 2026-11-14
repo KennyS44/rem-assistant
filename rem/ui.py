@@ -523,7 +523,15 @@ class SettingsWindow:
         row("", ttk.Checkbutton(f, text="Можно перебить: «Рэм, …» поверх ответа" + state,
                                 variable=self.barge),
             "Рэм замолкает и слушает новую команду. «Рэм, хватит» — просто замолчать.")
+        cur = float(self.cfg.get("end_pause", 1.2))
+        self.end_pause = tk.StringVar(value=min(self.PAUSES, key=lambda k: abs(self.PAUSES[k] - cur)))
+        row("Пауза в конце фразы", ttk.Combobox(f, textvariable=self.end_pause, state="readonly",
+                                                values=list(self.PAUSES)),
+            "Сколько ждать тишины, прежде чем считать команду сказанной. Обрывает на полуслове — длиннее.")
         return f
+
+    PAUSES = {"Короткая — 0,8 секунды": 0.8, "Обычная — 1,2 секунды": 1.2, "Длинная — 1,8 секунды": 1.8,
+              "Очень длинная — 2,5 секунды": 2.5}
 
     @staticmethod
     def _slider(parent, var, lo, hi, fmt, refs=None):
@@ -890,6 +898,7 @@ class SettingsWindow:
         c["mic_device"] = None if mic == self.mic_auto else mic.removesuffix("  — не микрофон")
         c["ignore_speakers"] = bool(self.ignore_speakers.get())
         c["barge_in"] = bool(self.barge.get())
+        c["end_pause"] = self.PAUSES.get(self.end_pause.get(), 1.2)
         c["auto_update"] = bool(self.auto_update.get())
         c["disabled_skills"] = [n for n, (on, _, _) in self.skill_vars.items() if not on.get()]
         c["confirm_overrides"] = {n: ask.get() for n, (_, ask, default) in self.skill_vars.items()

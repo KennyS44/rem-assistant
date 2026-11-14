@@ -708,12 +708,13 @@ def empty_recycle_bin() -> None:
 
 # ——— сеть: Wi‑Fi и Bluetooth (Windows.Devices.Radios — без прав администратора) ———
 
-_RADIOS = r"""
+_WINRT = r"""
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and
   $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
-[Windows.Devices.Radios.Radio, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
+"""
+_RADIOS = _WINRT + r"""[Windows.Devices.Radios.Radio, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Radios.RadioAccessStatus, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
 [Windows.Devices.Radios.RadioState, Windows.System.Devices, ContentType=WindowsRuntime] | Out-Null
 Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
@@ -812,3 +813,42 @@ def shutdown_cancel() -> bool:
     _need_windows()
     p = subprocess.run(["shutdown", "/a"], capture_output=True, creationflags=0x08000000)
     return p.returncode == 0
+
+
+# ——— что играет: медиасессии Windows (то же, что плитка музыки у громкости) ———
+
+_MEDIA = _WINRT + r"""
+$M = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]
+$ss = (Await ($M::RequestAsync()) ($M)).GetSessions()
+"""
+
+
+def media_sessions() -> list[dict]:
+    """Кто сейчас может играть: [{"app": AppUserModelId, "status": "Playing" | "Paused" | …}]."""
+    out = []
+    script = _MEDIA + "$ss | ForEach-Object { \"$($_.SourceAppUserModelId)|$($_.GetPlaybackInfo().PlaybackStatus)\" }"
+    for line in powershell(script, timeout=15).splitlines():
+        app, _, status = line.strip().rpartition("|")
+        if app:
+            out.append({"app": app, "status": status})
+    return out
+
+
+def media_command(app: str, command: str) -> bool:
+    """Нажать «играть» или «пауза» в медиасессии приложения app (command: play | pause)."""
+    method = {"play": "TryPlayAsync", "pause": "TryPauseAsync"}[command]
+    app = app.replace("'", "''")
+    script = _MEDIA + (f"$s = $ss | Where-Object {{ $_.SourceAppUserModelId -eq '{app}' }} | Select-Object -First 1\n"
+                       f"if ($s) {{ Await ($s.{method}()) ([bool]) }} else {{ 'False' }}")
+    return powershell(script, timeout=15).strip().endswith("True")
+
+
+def start_apps() -> list[tuple[str, str]]:
+    """Все программы меню «Пуск», включая приложения из Microsoft Store: [(название, AppID)].
+    Запуск — open_path("shell:AppsFolder\\" + AppID)."""
+    out = []
+    for line in powershell("Get-StartApps | ForEach-Object { \"$($_.Name)|$($_.AppID)\" }", timeout=20).splitlines():
+        name, _, app_id = line.strip().partition("|")
+        if name and app_id:
+            out.append((name, app_id))
+    return out

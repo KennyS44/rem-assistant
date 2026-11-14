@@ -5,6 +5,7 @@
 Голого «отмени» нет нарочно: сразу после «поставь таймер» оно значило бы не Ctrl+Z."""
 from __future__ import annotations
 
+import re
 import time
 
 from .. import winapi
@@ -53,18 +54,43 @@ KEYS: dict[str, tuple[tuple[str, ...] | int, list[str]]] = {
 }
 
 
+_RELOAD = re.compile(r"^(?:обнови|обновить|перезагрузи|перезагрузить|освежи|рефреш)\s+(?:(?:эту|текущую|мою)\s+)?"
+                     r"(?:страниц\w*|вкладк\w*|сайт\w*|браузер\w*)(?:\s+(?:в\s+)?(?:браузер\w*|хром\w*|интернет\w*))?$|"
+                     r"^(?:обнови|перезагрузи)\s+(?:в\s+)?(?:браузер\w*|хром\w*)\s+страниц\w*$|"
+                     r"^(?:страниц\w*|вкладк\w*)\s+(?:обнови|перезагрузи)$")
+# действия браузера: если впереди не браузер — нажать в последнем окне браузера
+BROWSER_ACTIONS = {"reload", "new_tab", "reopen_tab"}
+
+
+def _parse(text: str):
+    """«обнови страницу браузера», «перезагрузи вкладку», «обнови браузер» — нажать F5."""
+    from ..fastpath import clean                     # fastpath сам импортирует умения
+    t = clean(text)
+    return {"action": "reload"} if _RELOAD.match(t) else None
+
+
+def _browser_window(w: dict | None) -> dict | None:
+    """Окно браузера для «обнови страницу»: впереди браузер или проводник — оно; иначе последний браузер."""
+    from .apps import BROWSER_EXES
+    if w and w.get("exe", "").lower() in BROWSER_EXES | {"explorer.exe"}:
+        return w
+    return next((b for b in winapi.open_windows() if b["exe"].lower() in BROWSER_EXES), w)
+
+
 @skill("press_keys", "Клавиши и прокрутка",
        "Скопировать, вставить, сохранить, отменить, вкладки браузера, обновить, назад, прокрутка — "
        "в окне, с которым работают.",
        params=[Param("action", "string", "что нажать", enum=list(KEYS))],
        examples=[(phrase, {"action": a}) for a, (_, phrases) in KEYS.items() for phrase in phrases],
-       category="Окна", model=False)
+       category="Окна", model=False, parse=_parse)
 def press_keys(ctx, action: str):
     what = KEYS[action][0]
     if isinstance(what, int):
         winapi.scroll(what)
         return None
     w = winapi.foreground_window()
+    if action in BROWSER_ACTIONS:
+        w = _browser_window(w)
     if what == ("close",):
         if w:
             winapi.close_windows([w["hwnd"]])

@@ -116,6 +116,7 @@ class App:
                                  speakers=self.speakers if self.speakers.available else None,
                                  mute=self.voice.speaking, echo=echo, voice=self.voice)
         self.listener.barge_in = bool(self.config.get("barge_in", True))
+        self.listener.pause = float(self.config.get("end_pause", 1.2))
         self.assistant.listener = self.listener
         self.ui.call(self.ui.start_tray)
         threading.Thread(target=self.assistant.watch_game_mode, args=(self.stop,), daemon=True).start()
@@ -245,6 +246,7 @@ class App:
         if self.listener:
             self.listener.set_wake(self.config["wake_word"])
             self.listener.barge_in = bool(self.config.get("barge_in", True))
+            self.listener.pause = float(self.config.get("end_pause", 1.2))
             if old.get("mic_device") != self.config.get("mic_device"):
                 self._switch_mic()
             if old.get("ignore_speakers", True) != self.config.get("ignore_speakers", True):
@@ -408,6 +410,16 @@ def selftest(report: str | None = None) -> int:
               and fp.match("очисти корзину").actions[0][0] == "file_actions"
               and fp.match("включи вай фай").actions == [("network", {"action": "wifi_on"})]
               and fp.match("выключи компьютер через час").actions == [("shutdown_timer", {"minutes": 60})])
+        check("вкладки, обновить, музыка, сообщение — быстрым путём",
+              fp.match("включи предыдущую вкладку").actions == [("switch_tab", {"name": "предыдущую"})]
+              and fp.match("обнови браузер").actions == [("press_keys", {"action": "reload"})]
+              and fp.match("в музыку").actions == [("music", {"action": "play"})]
+              and fp.match("отправь сообщение").actions[0][0] == "send_message")
+        try:
+            names = winapi.start_apps()
+            check(f"программы «Пуска» с приложениями Магазина: {len(names)}", len(names) > 0)
+        except Exception as e:
+            check(f"программы «Пуска»: {e}", False)
         for name, fn in (("яркость экранов", lambda: winapi.brightness()),
                          ("ночной свет", lambda: winapi.night_light()),
                          ("корзина", lambda: winapi.recycle_bin()),
@@ -415,7 +427,8 @@ def selftest(report: str | None = None) -> int:
                          ("раскладки", lambda: [hex(h & 0xFFFF) for h in winapi.keyboard_layouts()]),
                          ("не беспокоить", lambda: winapi.focus_assist()),
                          ("Wi-Fi и Bluetooth", lambda: winapi.radios()),
-                         ("подключения", lambda: winapi.connections())):
+                         ("подключения", lambda: winapi.connections()),
+                         ("что играет", lambda: winapi.media_sessions())):
             try:                                 # на сервере сборки чего-то может не быть — главное, без падений
                 emit(f"INFO {name}: {fn()}")
             except Exception as e:
